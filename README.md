@@ -83,4 +83,4 @@ Node env vars:
 Notes:
 - The API uses gRPC to talk to cache nodes, so you still need the gRPC nodes running elsewhere (e.g., Docker or a VM).
 - Vercel serverless does not support WebSockets. The dashboard automatically falls back to polling `/health`.
-# DistribConn
+# DistroCache
