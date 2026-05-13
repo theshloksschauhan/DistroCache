@@ -31,6 +31,50 @@ message DeleteResponse {
   string error = 2;
 }
 
+message EntryMetadata {
+  string key = 1;
+  double expires_at = 2;
+  int64 version = 3;
+}
+
+message Entry {
+  string key = 1;
+  bytes value = 2;
+  double expires_at = 3;
+  int64 version = 4;
+}
+
+message ListEntriesRequest {
+  bool include_values = 1;
+}
+
+message ListEntriesResponse {
+  repeated Entry entries = 1;
+}
+
+message GetEntryRequest {
+  string key = 1;
+}
+
+message GetEntryResponse {
+  bool found = 1;
+  Entry entry = 2;
+  string error = 3;
+}
+
+message PutReplicaRequest {
+  string key = 1;
+  bytes value = 2;
+  double expires_at = 3;
+  int64 version = 4;
+}
+
+message PutReplicaResponse {
+  bool ok = 1;
+  bool applied = 2;
+  string error = 3;
+}
+
 message HealthRequest {}
 
 message HealthResponse {
@@ -42,5 +86,8 @@ service CacheNode {
   rpc Get(GetRequest) returns (GetResponse);
   rpc Put(PutRequest) returns (PutResponse);
   rpc Delete(DeleteRequest) returns (DeleteResponse);
+  rpc ListEntries(ListEntriesRequest) returns (ListEntriesResponse);
+  rpc GetEntry(GetEntryRequest) returns (GetEntryResponse);
+  rpc PutReplica(PutReplicaRequest) returns (PutReplicaResponse);
   rpc Health(HealthRequest) returns (HealthResponse);
 }

@@ -7,6 +7,9 @@ const statusLabel = (ok) => (ok ? "Healthy" : "Unreachable");
 export default function App() {
   const [nodes, setNodes] = useState({});
   const [lastUpdate, setLastUpdate] = useState(null);
+  const [membership, setMembership] = useState([]);
+  const [ringVersion, setRingVersion] = useState(0);
+  const [rebalances, setRebalances] = useState([]);
   const apiUrl = useMemo(() => DEFAULT_API, []);
 
   useEffect(() => {
@@ -27,6 +30,19 @@ export default function App() {
       }
     };
 
+    const fetchMembership = async () => {
+      try {
+        const response = await fetch(`${apiUrl}/membership/nodes`);
+        if (!response.ok) return;
+        const data = await response.json();
+        if (!isMounted) return;
+        setMembership(data.nodes || []);
+        setRingVersion(data.ring_version || 0);
+      } catch (error) {
+        return;
+      }
+    };
+
     const connect = () => {
       socket = new WebSocket(apiUrl.replace("http", "ws") + "/ws/cluster");
       socket.onmessage = (event) => {
@@ -34,6 +50,7 @@ export default function App() {
         const data = JSON.parse(event.data);
         if (data.type === "cluster") {
           setNodes(data.nodes || {});
+          setRebalances(data.rebalances || []);
           setLastUpdate(new Date());
         }
       };
@@ -49,11 +66,14 @@ export default function App() {
 
     connect();
     fetchHealth();
+    fetchMembership();
     pollTimer = window.setInterval(fetchHealth, 3000);
+    const membershipTimer = window.setInterval(fetchMembership, 5000);
 
     return () => {
       isMounted = false;
       if (pollTimer) window.clearInterval(pollTimer);
+      if (membershipTimer) window.clearInterval(membershipTimer);
       if (socket) socket.close();
     };
   }, [apiUrl]);
@@ -78,6 +98,10 @@ export default function App() {
           <div>
             <span>Last update</span>
             <strong>{lastUpdate ? lastUpdate.toLocaleTimeString() : "--"}</strong>
+          </div>
+          <div>
+            <span>Ring version</span>
+            <strong>{ringVersion}</strong>
           </div>
         </div>
       </header>
@@ -108,6 +132,42 @@ export default function App() {
             </div>
           </div>
         ))}
+      </section>
+
+      <section className="grid">
+        <div className="card">
+          <div className="card-header">
+            <h2>Membership</h2>
+            <span className="badge">{membership.length} nodes</span>
+          </div>
+          <div className="card-body">
+            {membership.length === 0 && <p>Waiting for membership data...</p>}
+            {membership.map((node) => (
+              <p key={node.node_id}>
+                <span>{node.address}</span>
+                <strong>{node.status}</strong>
+                <span>keys: {node.key_count}</span>
+              </p>
+            ))}
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-header">
+            <h2>Recent rebalances</h2>
+            <span className="badge">{rebalances.length}</span>
+          </div>
+          <div className="card-body">
+            {rebalances.length === 0 && <p>No rebalance activity yet.</p>}
+            {rebalances.map((rebalance) => (
+              <p key={`${rebalance.node_id}-${rebalance.timestamp}`}>
+                <span>{rebalance.node_id}</span>
+                <strong>{rebalance.keys_moved} moved</strong>
+                <span>{Number(rebalance.duration_s || 0).toFixed(2)}s</span>
+              </p>
+            ))}
+          </div>
+        </div>
       </section>
     </div>
   );

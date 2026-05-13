@@ -5,8 +5,10 @@ import warnings
 
 from . import cache_pb2 as cache__pb2
 
-GRPC_GENERATED_VERSION = '1.80.0'
+GRPC_GENERATED_VERSION = '1.64.1'
 GRPC_VERSION = grpc.__version__
+EXPECTED_ERROR_RELEASE = '1.65.0'
+SCHEDULED_RELEASE_DATE = 'June 25, 2024'
 _version_not_supported = False
 
 try:
@@ -16,12 +18,15 @@ except ImportError:
     _version_not_supported = True
 
 if _version_not_supported:
-    raise RuntimeError(
+    warnings.warn(
         f'The grpc package installed is at version {GRPC_VERSION},'
-        + ' but the generated code in cache_pb2_grpc.py depends on'
+        + f' but the generated code in cache_pb2_grpc.py depends on'
         + f' grpcio>={GRPC_GENERATED_VERSION}.'
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
+        + f' This warning will become an error in {EXPECTED_ERROR_RELEASE},'
+        + f' scheduled for release on {SCHEDULED_RELEASE_DATE}.',
+        RuntimeWarning
     )
 
 
@@ -48,6 +53,21 @@ class CacheNodeStub(object):
                 '/cache.CacheNode/Delete',
                 request_serializer=cache__pb2.DeleteRequest.SerializeToString,
                 response_deserializer=cache__pb2.DeleteResponse.FromString,
+                _registered_method=True)
+        self.ListEntries = channel.unary_unary(
+                '/cache.CacheNode/ListEntries',
+                request_serializer=cache__pb2.ListEntriesRequest.SerializeToString,
+                response_deserializer=cache__pb2.ListEntriesResponse.FromString,
+                _registered_method=True)
+        self.GetEntry = channel.unary_unary(
+                '/cache.CacheNode/GetEntry',
+                request_serializer=cache__pb2.GetEntryRequest.SerializeToString,
+                response_deserializer=cache__pb2.GetEntryResponse.FromString,
+                _registered_method=True)
+        self.PutReplica = channel.unary_unary(
+                '/cache.CacheNode/PutReplica',
+                request_serializer=cache__pb2.PutReplicaRequest.SerializeToString,
+                response_deserializer=cache__pb2.PutReplicaResponse.FromString,
                 _registered_method=True)
         self.Health = channel.unary_unary(
                 '/cache.CacheNode/Health',
@@ -77,6 +97,24 @@ class CacheNodeServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListEntries(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetEntry(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def PutReplica(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def Health(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -100,6 +138,21 @@ def add_CacheNodeServicer_to_server(servicer, server):
                     servicer.Delete,
                     request_deserializer=cache__pb2.DeleteRequest.FromString,
                     response_serializer=cache__pb2.DeleteResponse.SerializeToString,
+            ),
+            'ListEntries': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListEntries,
+                    request_deserializer=cache__pb2.ListEntriesRequest.FromString,
+                    response_serializer=cache__pb2.ListEntriesResponse.SerializeToString,
+            ),
+            'GetEntry': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetEntry,
+                    request_deserializer=cache__pb2.GetEntryRequest.FromString,
+                    response_serializer=cache__pb2.GetEntryResponse.SerializeToString,
+            ),
+            'PutReplica': grpc.unary_unary_rpc_method_handler(
+                    servicer.PutReplica,
+                    request_deserializer=cache__pb2.PutReplicaRequest.FromString,
+                    response_serializer=cache__pb2.PutReplicaResponse.SerializeToString,
             ),
             'Health': grpc.unary_unary_rpc_method_handler(
                     servicer.Health,
@@ -188,6 +241,87 @@ class CacheNode(object):
             '/cache.CacheNode/Delete',
             cache__pb2.DeleteRequest.SerializeToString,
             cache__pb2.DeleteResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListEntries(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/cache.CacheNode/ListEntries',
+            cache__pb2.ListEntriesRequest.SerializeToString,
+            cache__pb2.ListEntriesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetEntry(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/cache.CacheNode/GetEntry',
+            cache__pb2.GetEntryRequest.SerializeToString,
+            cache__pb2.GetEntryResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PutReplica(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/cache.CacheNode/PutReplica',
+            cache__pb2.PutReplicaRequest.SerializeToString,
+            cache__pb2.PutReplicaResponse.FromString,
             options,
             channel_credentials,
             insecure,

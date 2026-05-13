@@ -71,6 +71,26 @@ class Storage:
             self._conn.commit()
             return value
 
+    async def get_entry(self, key: str) -> Optional[tuple[bytes, Optional[float], int]]:
+        return await asyncio.to_thread(self._get_entry_sync, key)
+
+    def _get_entry_sync(self, key: str) -> Optional[tuple[bytes, Optional[float], int]]:
+        now = time.time()
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT value, expires_at, version FROM cache_entries WHERE key = ?",
+                (key,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            value, expires_at, version = row
+            if expires_at is not None and now >= expires_at:
+                self._conn.execute("DELETE FROM cache_entries WHERE key = ?", (key,))
+                self._conn.commit()
+                return None
+            return value, expires_at, int(version)
+
     async def put(self, key: str, value: bytes) -> None:
         await asyncio.to_thread(self._put_sync, key, value)
 
@@ -147,6 +167,20 @@ class Storage:
     def _count_sync(self) -> int:
         cursor = self._conn.execute("SELECT COUNT(*) FROM cache_entries")
         return int(cursor.fetchone()[0])
+
+    async def list_entries(self) -> list[tuple[str, bytes, Optional[float], int]]:
+        return await asyncio.to_thread(self._list_entries_sync)
+
+    def _list_entries_sync(self) -> list[tuple[str, bytes, Optional[float], int]]:
+        now = time.time()
+        with self._lock:
+            self._prune_expired(now)
+            self._conn.commit()
+            cursor = self._conn.execute(
+                "SELECT key, value, expires_at, version FROM cache_entries",
+            )
+            rows = cursor.fetchall()
+            return [(row[0], row[1], row[2], int(row[3])) for row in rows]
 
     def _prune_expired(self, now: float) -> None:
         self._conn.execute(

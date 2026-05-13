@@ -6,6 +6,11 @@ services:
     environment:
       NODE_ID: node1
       GRPC_PORT: 50051
+      NODE_ADDRESS: node1:50051
+      BACKEND_URL: http://backend:8000
+      HEARTBEAT_INTERVAL: 2.0
+      REPLICATION_FACTOR: 3
+      STORAGE_PATH: /data/cache.db
       TTL_SECONDS: 300
       MAX_ITEMS: 1000
     healthcheck:
@@ -13,6 +18,8 @@ services:
       interval: 5s
       timeout: 2s
       retries: 5
+    volumes:
+      - node1-data:/data
 
   node2:
     build:
@@ -21,6 +28,11 @@ services:
     environment:
       NODE_ID: node2
       GRPC_PORT: 50051
+      NODE_ADDRESS: node2:50051
+      BACKEND_URL: http://backend:8000
+      HEARTBEAT_INTERVAL: 2.0
+      REPLICATION_FACTOR: 3
+      STORAGE_PATH: /data/cache.db
       TTL_SECONDS: 300
       MAX_ITEMS: 1000
     healthcheck:
@@ -28,6 +40,8 @@ services:
       interval: 5s
       timeout: 2s
       retries: 5
+    volumes:
+      - node2-data:/data
 
   node3:
     build:
@@ -36,6 +50,11 @@ services:
     environment:
       NODE_ID: node3
       GRPC_PORT: 50051
+      NODE_ADDRESS: node3:50051
+      BACKEND_URL: http://backend:8000
+      HEARTBEAT_INTERVAL: 2.0
+      REPLICATION_FACTOR: 3
+      STORAGE_PATH: /data/cache.db
       TTL_SECONDS: 300
       MAX_ITEMS: 1000
     healthcheck:
@@ -43,6 +62,8 @@ services:
       interval: 5s
       timeout: 2s
       retries: 5
+    volumes:
+      - node3-data:/data
 
   node4:
     build:
@@ -51,6 +72,11 @@ services:
     environment:
       NODE_ID: node4
       GRPC_PORT: 50051
+      NODE_ADDRESS: node4:50051
+      BACKEND_URL: http://backend:8000
+      HEARTBEAT_INTERVAL: 2.0
+      REPLICATION_FACTOR: 3
+      STORAGE_PATH: /data/cache.db
       TTL_SECONDS: 300
       MAX_ITEMS: 1000
     healthcheck:
@@ -58,6 +84,8 @@ services:
       interval: 5s
       timeout: 2s
       retries: 5
+    volumes:
+      - node4-data:/data
 
   node5:
     build:
@@ -66,6 +94,11 @@ services:
     environment:
       NODE_ID: node5
       GRPC_PORT: 50051
+      NODE_ADDRESS: node5:50051
+      BACKEND_URL: http://backend:8000
+      HEARTBEAT_INTERVAL: 2.0
+      REPLICATION_FACTOR: 3
+      STORAGE_PATH: /data/cache.db
       TTL_SECONDS: 300
       MAX_ITEMS: 1000
     healthcheck:
@@ -73,6 +106,8 @@ services:
       interval: 5s
       timeout: 2s
       retries: 5
+    volumes:
+      - node5-data:/data
 
   backend:
     build:
@@ -82,6 +117,8 @@ services:
       NODE_ADDRESSES: "node1:50051,node2:50051,node3:50051,node4:50051,node5:50051"
       REPLICATION_FACTOR: 3
       HEALTH_INTERVAL: 2.0
+      HEARTBEAT_INTERVAL: 2.0
+      HEARTBEAT_TIMEOUT: 6.0
       REQUEST_TIMEOUT: 1.0
       RETRY_ATTEMPTS: 2
       RETRY_BACKOFF: 0.1
@@ -121,3 +158,10 @@ services:
       - "9090:9090"
     depends_on:
       - backend
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:
+  node4-data:
+  node5-data:
