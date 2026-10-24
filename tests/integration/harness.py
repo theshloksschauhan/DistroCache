@@ -64,6 +64,23 @@ def free_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def wait_port_released(port: int, timeout: float = 10.0) -> None:
+    """Wait until `port` can be bound again.
+
+    On Windows a venv's python.exe is a launcher: killing it returns before the real
+    interpreter (which owns the socket) is gone, so the port stays busy for a moment.
+    """
+
+    def bindable() -> bool:
+        with socket.socket() as sock:
+            if not IS_WINDOWS:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # ignore TIME_WAIT
+            sock.bind(("127.0.0.1", port))
+        return True
+
+    wait_until(bindable, timeout, f"port {port} to be released")
+
+
 def wait_until(
     predicate: Callable[[], bool], timeout: float, description: str, interval: float = 0.1
 ) -> None:
@@ -327,9 +344,12 @@ class Cluster:
 
     def kill(self, handle: NodeHandle) -> None:
         handle.process.kill()
+        wait_port_released(handle.port)
 
     def stop(self, handle: NodeHandle) -> int:
-        return handle.process.stop()
+        code = handle.process.stop()
+        wait_port_released(handle.port)
+        return code
 
     def restart(self, handle: NodeHandle) -> None:
         """Start a stopped or killed node again: same id, port, address and database."""
