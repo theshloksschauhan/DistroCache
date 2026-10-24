@@ -1,6 +1,10 @@
 import asyncio
+import dataclasses
 import socket
 from pathlib import Path
+
+import grpc
+import pytest
 
 from node.app import Node, NodeConfig
 
@@ -50,5 +54,33 @@ def test_stop_cancels_every_background_task(tmp_path: Path) -> None:
 
         assert all(task.cancelled() for task in started), "a background task outlived stop"
         assert not node._tasks
+
+    asyncio.run(scenario())
+
+
+def test_start_fails_when_port_is_held_by_another_grpc_server(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        # Default options: on Linux this server has SO_REUSEPORT, like another node would.
+        holder = grpc.aio.server()
+        port = holder.add_insecure_port("127.0.0.1:0")
+        await holder.start()
+        config = dataclasses.replace(
+            _config(tmp_path), grpc_port=port, node_address=f"127.0.0.1:{port}"
+        )
+        node = Node(config)
+        stop_event = asyncio.Event()
+        run_task = asyncio.create_task(node.run(stop_event))
+        try:
+            done, _ = await asyncio.wait({run_task}, timeout=10)
+            if not done:
+                stop_event.set()
+                await run_task
+            assert done, "node started on a port another gRPC server is listening on"
+            with pytest.raises(RuntimeError, match="Failed to bind"):
+                run_task.result()
+        finally:
+            await holder.stop(grace=None)
+            await node.membership.close()
+            node.storage.close()
 
     asyncio.run(scenario())

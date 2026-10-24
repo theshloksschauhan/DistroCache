@@ -174,7 +174,9 @@ class Node:
 
     async def run(self, stop_event: asyncio.Event) -> None:
         await self.storage.initialize()
-        server = grpc.aio.server()
+        # gRPC enables SO_REUSEPORT on Linux by default, which lets a second node bind the
+        # same port and silently split connections with the first. Fail to start instead.
+        server = grpc.aio.server(options=[("grpc.so_reuseport", 0)])
         cache_pb2_grpc.add_CacheNodeServicer_to_server(
             CacheNodeService(self.storage, self.config.node_id), server
         )
