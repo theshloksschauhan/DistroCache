@@ -139,6 +139,9 @@ decide the read.
   every replica and every retry. A replica that already holds that exact version returns
   `ALREADY_CURRENT`, and the coordinator counts that as an ack. That is what makes a
   retried write safe.
+- **Stage 4:** make misses directly observable, with a `distrocache_misses_total` counter
+  or an `outcome` label on `distrocache_requests_total`, instead of deriving them from
+  requests, hits, and failures.
 - **Stage 7:** add a `node_id` label to the rebalance metrics, and switch the version tests
   from the `ring_version` inference to that label.
 - **Later:** on Windows, put harness child processes in a Job Object with kill-on-close, so
