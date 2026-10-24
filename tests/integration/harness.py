@@ -203,7 +203,9 @@ class Cluster:
         self.nodes: dict[str, NodeHandle] = {}
         self.coordinator: Process | None = None
         self.url = ""
-        self.http = httpx.Client(timeout=15.0)
+        # No keep-alive: after an unhandled exception (a 500) uvicorn resets the connection,
+        # and a pooled client would fail its next request on it.
+        self.http = httpx.Client(timeout=15.0, limits=httpx.Limits(max_keepalive_connections=0))
 
     # ----- lifecycle -------------------------------------------------------------
 
