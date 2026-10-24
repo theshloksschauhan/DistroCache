@@ -11,6 +11,11 @@ authors = [{ name = "Shlok Shoorveer Singh Chauhan" }]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+# Integration tests start real processes; run them explicitly with `pytest -m integration`.
+addopts = ["-m", "not integration"]
+markers = ["integration: starts a real coordinator and node processes"]
+# A hung cluster must fail the test, not the whole CI job.
+timeout = 300
 
 [tool.coverage.run]
 source = ["backend", "node", "distrocache_common"]
@@ -32,6 +37,8 @@ python_version = "3.11"
 files = ["backend", "node", "distrocache_common"]
 exclude = ["^distrocache_common/generated/"]
 ignore_missing_imports = true
+# The default SQLite cache would put .db files in the working tree.
+sqlite_cache = false
 
 [[tool.mypy.overrides]]
 module = ["distrocache_common.generated.*"]

@@ -97,11 +97,15 @@ python scripts/gen_proto.py
 
 ## Tests and checks
 ```bash
-pytest --cov
+pytest --cov          # unit tests
+pytest -m integration # starts a real coordinator and nodes on localhost ports
 ruff check
 ruff format --check
 mypy
 ```
+
+Integration tests run each cluster in a temporary directory, so no `.db` files are written
+into the repo. See [docs/design/0001-integration-harness.md](docs/design/0001-integration-harness.md).
 
 Install the git hooks with `pre-commit install`.
 
@@ -121,6 +125,7 @@ API env vars:
 Node env vars:
 - `BACKEND_URL` to the API base URL for membership heartbeats.
 - `NODE_ADDRESS` to the gRPC address other nodes should use (defaults to `NODE_ID:GRPC_PORT`).
+- `GRPC_HOST` interface the gRPC server binds to (default `0.0.0.0`; use `127.0.0.1` for local-only).
 - `HEARTBEAT_INTERVAL` for node heartbeat frequency in seconds.
 - `REPLICATION_FACTOR` to align with the API replication factor.
 - `GRPC_TIMEOUT` gRPC timeout for replica transfers.
@@ -132,11 +137,16 @@ Frontend:
 - `VITE_API_URL` to the API base URL (build-time).
 
 ## Known limitations (being addressed)
+Each correctness limitation below has a reproducing test marked `xfail` in `tests/`.
+
 - Reads return the first replica that has the key; there is no read quorum.
 - Writes succeed if any one replica acknowledges them.
 - Deletes leave no tombstones, so a replica that missed a delete can still serve the deleted value.
 - Entry versions are per-node counters, not cluster-wide.
-- A dead replica can make `GET` return HTTP 500 instead of trying the remaining replicas.
+- A dead replica can make `GET` return HTTP 500 instead of trying the remaining replicas, and
+  that failure is not counted in `distrocache_request_failures_total`.
+- Nodes listed in `NODE_ADDRESSES` get a second `seed-N` membership record that is later marked down.
+- A rebalance can delete a write that reaches a node while that node is handing the key off.
 - A single coordinator holds membership and routes every request.
 - No authentication or TLS on the HTTP API or between nodes.
 - No benchmarks yet.
