@@ -296,11 +296,24 @@ class Cluster:
         handle.process.start()
 
     def _wait_node_ready(self, handle: NodeHandle) -> None:
+        started = time.time()
+
         def ready() -> bool:
             require(handle.process.running, f"{handle.node_id} exited during startup")
             return self.node_health(handle) and self.node_status(handle) == "up"
 
         wait_until(ready, STARTUP_TIMEOUT, f"{handle.node_id} to serve and register")
+
+        # The coordinator reuses one gRPC channel per address; after a restart that channel
+        # may still be in reconnect backoff and fail requests. Its own health loop uses the
+        # same channel, so a passing check made after the start means requests will get through.
+        def coordinator_reaches_node() -> bool:
+            state = self.http.get(f"{self.url}/health").json()["nodes"].get(handle.address)
+            return bool(state and state["ok"] and state["last_seen"] > started)
+
+        wait_until(
+            coordinator_reaches_node, STARTUP_TIMEOUT, f"the coordinator to reach {handle.node_id}"
+        )
 
     def add_node(self) -> NodeHandle:
         handle = self._new_node_handle()
