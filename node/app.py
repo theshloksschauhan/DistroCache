@@ -76,10 +76,16 @@ class CacheNodeService(cache_pb2_grpc.CacheNodeServicer):
     async def Get(
         self, request: cache_pb2.GetRequest, context: grpc.aio.ServicerContext
     ) -> cache_pb2.GetResponse:
-        value = await self._storage.get(request.key)
-        if value is None:
+        entry = await self._storage.get(request.key)
+        if entry is None:
             return cache_pb2.GetResponse(found=False)
-        return cache_pb2.GetResponse(found=True, value=value)
+        value, expires_at, version = entry
+        return cache_pb2.GetResponse(
+            found=True,
+            value=value,
+            version=_version_proto(version),
+            expires_at=expires_at or 0.0,
+        )
 
     async def Put(
         self, request: cache_pb2.PutRequest, context: grpc.aio.ServicerContext

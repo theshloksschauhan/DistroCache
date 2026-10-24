@@ -27,6 +27,7 @@ from .metrics import (
     HEARTBEAT_FAILURES,
     HIT_COUNT,
     LATENCY,
+    MISS_COUNT,
     NODE_DEREGISTRATIONS,
     NODE_REGISTRATIONS,
     NODE_STATUS,
@@ -40,8 +41,8 @@ from .websocket_manager import WebSocketManager
 
 logger = logging.getLogger("distrocache.api")
 
-# One answering replica is enough. Stage 4 replaces this with R and W.
-_REQUIRED_ACKS = 1
+# A stored write version as a tuple, compared directly: (physical_ms, logical, coordinator_id).
+NodeVersion = tuple[int, int, str]
 
 # A versioned write acks if the node stored it (APPLIED) or already held it or a newer copy
 # (ALREADY_CURRENT); the latter is what makes a retried write idempotent.
@@ -54,6 +55,16 @@ def _version_proto(version: HLC) -> cache_pb2.Version:
         logical=version.logical,
         coordinator_id=version.coordinator_id,
     )
+
+
+def _version_dict(version: HLC | NodeVersion) -> dict[str, Any]:
+    if isinstance(version, HLC):
+        return {
+            "physical_ms": version.physical_ms,
+            "logical": version.logical,
+            "coordinator_id": version.coordinator_id,
+        }
+    return {"physical_ms": version[0], "logical": version[1], "coordinator_id": version[2]}
 
 
 # gRPC's default max reconnect backoff is 120s, so a channel that watched a node die
@@ -80,16 +91,13 @@ def _retryable(exc: BaseException) -> bool:
     return status in (grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED)
 
 
-def _failed_vote(operation: str, node: str, error: str, errors: list[dict[str, str]]) -> None:
-    errors.append({"node": node, "error": error})
-    logger.warning("%s on %s failed: %s", operation, node, error)
-
-
-def _unavailable(operation: str, acks: int, errors: list[dict[str, str]]) -> JSONResponse:
+def _unavailable(
+    operation: str, acks: int, required: int, errors: list[dict[str, str]]
+) -> JSONResponse:
     REQUEST_FAILURES.labels(operation=operation, reason="unavailable").inc()
     return JSONResponse(
         status_code=503,
-        content={"acks": acks, "required": _REQUIRED_ACKS, "errors": errors},
+        content={"acks": acks, "required": required, "errors": errors},
     )
 
 
@@ -103,6 +111,8 @@ class Settings:
     request_timeout: float = 1.0
     retry_attempts: int = 2
     retry_backoff: float = 0.1
+    read_quorum: int = 2
+    write_quorum: int = 2
     ttl_seconds: int = 0
     coordinator_id: str = "coordinator"
     cors_origins: tuple[str, ...] = ("http://localhost:3000", "http://localhost:5173")
@@ -125,10 +135,22 @@ def load_settings() -> Settings:
         request_timeout=float(os.getenv("REQUEST_TIMEOUT", "1.0")),
         retry_attempts=int(os.getenv("RETRY_ATTEMPTS", "2")),
         retry_backoff=float(os.getenv("RETRY_BACKOFF", "0.1")),
+        read_quorum=int(os.getenv("READ_QUORUM", "2")),
+        write_quorum=int(os.getenv("WRITE_QUORUM", "2")),
         ttl_seconds=int(os.getenv("TTL_SECONDS", "0")),
         coordinator_id=os.getenv("COORDINATOR_ID", "coordinator"),
         cors_origins=cors_origins,
     )
+
+
+def _validate_quorums(settings: Settings) -> None:
+    n, r, w = settings.replication_factor, settings.read_quorum, settings.write_quorum
+    if not (1 <= r <= n and 1 <= w <= n):
+        raise ValueError(f"need 1 <= R <= N and 1 <= W <= N; got N={n}, R={r}, W={w}")
+    if r + w > n:
+        logger.info("R + W > N (%d + %d > %d): a read sees the latest acked write", r, w, n)
+    else:
+        logger.warning("R + W <= N (%d + %d <= %d): a read may miss the latest write", r, w, n)
 
 
 class Coordinator:
@@ -138,6 +160,7 @@ class Coordinator:
     """
 
     def __init__(self, settings: Settings) -> None:
+        _validate_quorums(settings)
         self.settings = settings
         self.clock = HybridClock(settings.coordinator_id)
         self.clients = GrpcClientPool(channel_options=_RECONNECT_BACKOFF)
@@ -148,6 +171,9 @@ class Coordinator:
         self.recent_rebalances: list[dict[str, Any]] = []
         self.cluster_state: dict[str, dict[str, Any]] = {}
         self._tasks: list[asyncio.Task[None]] = []
+        # Writes that have met quorum but whose remaining replicas are still finishing. Held so
+        # the event loop does not garbage-collect them before they complete.
+        self._background: set[asyncio.Task[Any]] = set()
 
     def start(self) -> None:
         self._spawn(self._refresh_health_loop())
@@ -156,10 +182,16 @@ class Coordinator:
     def _spawn(self, coro: Coroutine[Any, Any, None]) -> None:
         self._tasks.append(asyncio.create_task(coro))
 
+    def detach(self, tasks: set[asyncio.Task[Any]]) -> None:
+        """Let already-running tasks finish without blocking the response."""
+        for task in tasks:
+            self._background.add(task)
+            task.add_done_callback(self._background.discard)
+
     async def stop(self) -> None:
-        for task in self._tasks:
+        for task in [*self._tasks, *self._background]:
             task.cancel()
-        await asyncio.gather(*self._tasks, return_exceptions=True)
+        await asyncio.gather(*self._tasks, *self._background, return_exceptions=True)
         await self.clients.close()
 
     async def _refresh_health_loop(self) -> None:
@@ -369,8 +401,56 @@ async def cluster_ws(websocket: WebSocket, c: CoordinatorDep) -> None:
         c.ws_manager.disconnect(websocket)
 
 
-def _no_nodes(operation: str) -> JSONResponse:
-    return _unavailable(operation, acks=0, errors=[])
+def _no_nodes(operation: str, required: int) -> JSONResponse:
+    return _unavailable(operation, acks=0, required=required, errors=[])
+
+
+# One replica's reply to a read: ("found", node, None, version, value) with a value,
+# ("miss", node, None, None, None) for a key the replica does not hold, or
+# ("error", node, text, None, None) for a failed RPC. It never raises, so a detached
+# vote left running past the quorum cannot produce an unretrieved exception.
+ReadVote = tuple[str, str, str | None, NodeVersion | None, bytes | None]
+
+
+async def _read_vote(c: Coordinator, node: str, key: str) -> ReadVote:
+    try:
+        response = await c.grpc_get(node, key)
+    except Exception as exc:
+        return ("error", node, rpc_error_text(exc), None, None)
+    if response.found:
+        v = response.version
+        return ("found", node, None, (v.physical_ms, v.logical, v.coordinator_id), response.value)
+    return ("miss", node, None, None, None)
+
+
+async def _read_quorum(
+    c: Coordinator, key: str, nodes: list[str], threshold: int
+) -> tuple[int, list[dict[str, str]], tuple[NodeVersion, bytes, str] | None]:
+    """Query all replicas in parallel; stop once `threshold` have responded.
+
+    A response is a value or a miss; a failed RPC is not. Returns the number of responses, the
+    failed-vote errors, and the highest-versioned value seen (or None if every response missed).
+    """
+    pending = {asyncio.create_task(_read_vote(c, node, key)) for node in nodes}
+    responses = 0
+    errors: list[dict[str, str]] = []
+    best: tuple[NodeVersion, bytes, str] | None = None
+    while pending:
+        done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            kind, node, error, version, value = task.result()
+            if kind == "error":
+                errors.append({"node": node, "error": error or "read error"})
+                logger.warning("get on %s failed: %s", node, error)
+                continue
+            responses += 1
+            if kind == "found" and version is not None and value is not None:
+                if best is None or version > best[0]:
+                    best = (version, value, node)
+        if responses >= threshold:
+            break
+    c.detach(pending)  # late responses are ignored this stage; Stage 6 repairs from them
+    return responses, errors, best
 
 
 @router.get("/kv/{key}", response_model=None)
@@ -378,36 +458,32 @@ async def get_key(key: str, c: CoordinatorDep) -> dict[str, Any] | JSONResponse:
     REQUEST_COUNT.labels(operation="get").inc()
     nodes = await c.replicas_for(key)
     if not nodes:
-        return _no_nodes("get")
+        return _no_nodes("get", c.settings.read_quorum)
 
-    acks = 0
-    errors: list[dict[str, str]] = []
+    threshold = min(c.settings.read_quorum, len(nodes))
     with LATENCY.labels(operation="get").time():
-        for node in nodes:
-            try:
-                response = await c.grpc_get(node, key)
-            except Exception as exc:
-                _failed_vote("get", node, rpc_error_text(exc), errors)
-                continue
-            acks += 1
-            if not response.found:
-                continue
-            try:
-                value = response.value.decode("utf-8")
-            except UnicodeDecodeError:
-                REQUEST_FAILURES.labels(operation="get", reason="internal").inc()
-                raise HTTPException(
-                    status_code=500, detail="Stored value is not valid UTF-8"
-                ) from None
-            HIT_COUNT.labels(operation="get").inc()
-            return {"key": key, "value": value, "node": node}
+        responses, errors, best = await _read_quorum(c, key, nodes, threshold)
 
-    # A miss is a successful answer. Replicas that failed are not misses: with required=1
-    # a single answering replica that lacks the key decides the read, even when the
-    # replicas that hold it failed. Stage 4's read quorum fixes that.
-    if acks >= _REQUIRED_ACKS:
+    if responses < threshold:
+        # Too few replicas answered; the rest failed. Not a miss.
+        return _unavailable("get", responses, c.settings.read_quorum, errors)
+    if best is None:
+        MISS_COUNT.labels(operation="get").inc()
         raise HTTPException(status_code=404, detail="Key not found")
-    return _unavailable("get", acks, errors)
+    version, value_bytes, node = best
+    try:
+        value = value_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        REQUEST_FAILURES.labels(operation="get", reason="internal").inc()
+        raise HTTPException(status_code=500, detail="Stored value is not valid UTF-8") from None
+    HIT_COUNT.labels(operation="get").inc()
+    return {
+        "key": key,
+        "value": value,
+        "node": node,
+        "acks": responses,
+        "version": _version_dict(version),
+    }
 
 
 def _expires_at(ttl_seconds: int) -> float:
@@ -430,18 +506,23 @@ async def put_key(
         raise HTTPException(status_code=400, detail="Missing value")
     nodes = await c.replicas_for(key)
     if not nodes:
-        return _no_nodes("put")
+        return _no_nodes("put", c.settings.write_quorum)
 
     # One version and one expiry for every replica and every retry, assigned here.
     version = c.clock.tick()
     expires_at = _expires_at(_ttl_from(payload, c.settings.ttl_seconds))
+    threshold = min(c.settings.write_quorum, len(nodes))
     with LATENCY.labels(operation="put").time():
-        acks, errors = await _write_votes(
-            "put", nodes, lambda node: c.grpc_put(node, key, value.encode(), version, expires_at)
+        acks, errors = await _write_quorum(
+            c,
+            "put",
+            nodes,
+            lambda node: c.grpc_put(node, key, value.encode(), version, expires_at),
+            threshold,
         )
-    if acks < _REQUIRED_ACKS:
-        return _unavailable("put", acks, errors)
-    return {"key": key, "replicas": nodes, "failures": len(errors)}
+    if acks < threshold:
+        return _unavailable("put", acks, c.settings.write_quorum, errors)
+    return {"key": key, "replicas": nodes, "acks": acks, "version": _version_dict(version)}
 
 
 @router.delete("/kv/{key}", response_model=None)
@@ -449,35 +530,58 @@ async def delete_key(key: str, c: CoordinatorDep) -> dict[str, Any] | JSONRespon
     REQUEST_COUNT.labels(operation="delete").inc()
     nodes = await c.replicas_for(key)
     if not nodes:
-        return _no_nodes("delete")
+        return _no_nodes("delete", c.settings.write_quorum)
 
     version = c.clock.tick()
+    threshold = min(c.settings.write_quorum, len(nodes))
     with LATENCY.labels(operation="delete").time():
-        acks, errors = await _write_votes(
-            "delete", nodes, lambda node: c.grpc_delete(node, key, version, 0.0)
+        acks, errors = await _write_quorum(
+            c, "delete", nodes, lambda node: c.grpc_delete(node, key, version, 0.0), threshold
         )
-    if acks < _REQUIRED_ACKS:
-        return _unavailable("delete", acks, errors)
-    return {"key": key, "replicas": nodes, "failures": len(errors)}
+    if acks < threshold:
+        return _unavailable("delete", acks, c.settings.write_quorum, errors)
+    return {"key": key, "replicas": nodes, "acks": acks, "version": _version_dict(version)}
 
 
-async def _write_votes(
+async def _write_vote(
+    operation: str, node: str, call: Callable[[str], Awaitable[Any]]
+) -> tuple[bool, dict[str, str] | None]:
+    """One replica's write vote; never raises so a detached vote finishes cleanly."""
+    try:
+        response = await call(node)
+    except Exception as exc:
+        text = rpc_error_text(exc)
+        logger.warning("%s on %s failed: %s", operation, node, text)
+        return False, {"node": node, "error": text}
+    if response.status in _ACK_STATUSES:
+        return True, None
+    text = response.error or "write error"
+    logger.warning("%s on %s failed: %s", operation, node, text)
+    return False, {"node": node, "error": text}
+
+
+async def _write_quorum(
+    c: Coordinator,
     operation: str,
     nodes: list[str],
     call: Callable[[str], Awaitable[Any]],
+    threshold: int,
 ) -> tuple[int, list[dict[str, str]]]:
+    """Fan a write out to all replicas; return once `threshold` ack, leaving the rest running."""
+    pending = {asyncio.create_task(_write_vote(operation, node, call)) for node in nodes}
     acks = 0
     errors: list[dict[str, str]] = []
-    for node in nodes:
-        try:
-            response = await call(node)
-        except Exception as exc:
-            _failed_vote(operation, node, rpc_error_text(exc), errors)
-            continue
-        if response.status in _ACK_STATUSES:
-            acks += 1
-        else:
-            _failed_vote(operation, node, response.error or "write error", errors)
+    while pending:
+        done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            ok, error = task.result()
+            if ok:
+                acks += 1
+            elif error is not None:
+                errors.append(error)
+        if acks >= threshold:
+            break
+    c.detach(pending)  # a briefly-slow replica still receives the write in the background
     return acks, errors
 
 

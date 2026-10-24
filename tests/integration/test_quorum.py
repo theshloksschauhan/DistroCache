@@ -13,11 +13,6 @@ pytestmark = pytest.mark.integration
 ClusterFactory = Callable[..., Cluster]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="Stage 4: a write succeeds as soon as any single replica acknowledges it (W=1)",
-)
 def test_write_without_quorum_is_rejected(cluster_factory: ClusterFactory) -> None:
     cluster = cluster_factory(nodes=3)
     replicas = cluster.handles_for("quorum")
@@ -34,11 +29,6 @@ def test_write_without_quorum_is_rejected(cluster_factory: ClusterFactory) -> No
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="Stage 4: reads return the first replica that has the key, even a stale one (R=1)",
-)
 def test_stale_replica_does_not_hide_newer_value(cluster_factory: ClusterFactory) -> None:
     # Long timeout: the killed node must stay "up" so the ring (and ring_version) never changes.
     cluster = cluster_factory(nodes=3, heartbeat_timeout=60)
