@@ -89,7 +89,43 @@ jobs:
 
   docker:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - name: docker compose build
         run: docker compose build
+      - name: docker compose up
+        run: docker compose up -d --wait --wait-timeout 180
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          # Services without a healthcheck are only "running" after --wait, so retry each check.
+          expect() {
+            local want=$1; shift
+            local got=""
+            for _ in $(seq 1 15); do
+              got=$(curl -s -o /tmp/body -w '%{http_code}' --max-time 10 "$@" || true)
+              [ "$got" = "$want" ] && break
+              sleep 2
+            done
+            echo "expected $want, got $got: $*"
+            head -c 500 /tmp/body; echo
+            [ "$got" = "$want" ]
+          }
+          expect 200 -X POST -H 'Content-Type: application/json' -d '{"value": "ok"}' \
+            http://localhost:8000/kv/ci-smoke
+          expect 200 http://localhost:8000/kv/ci-smoke
+          jq -e '.value == "ok"' /tmp/body
+          expect 404 http://localhost:8000/kv/does-not-exist
+          expect 200 http://localhost:8000/metrics
+          grep -q 'distrocache_' /tmp/body
+          expect 200 http://localhost:3000/
+          expect 200 http://localhost:9090/-/ready
+      - name: Diagnostics
+        if: failure()
+        run: |
+          docker compose ps -a
+          docker compose logs --no-color
+      - name: docker compose down
+        if: always()
+        run: docker compose down -v
