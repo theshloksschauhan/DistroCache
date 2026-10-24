@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any, Dict, List, Tuple
 
@@ -50,40 +49,3 @@ class MembershipClient:
 
     async def close(self) -> None:
         await self._client.aclose()
-
-
-class HeartbeatLoop:
-    def __init__(
-        self,
-        membership: MembershipClient,
-        interval_s: float,
-    ) -> None:
-        self._membership = membership
-        self._interval_s = interval_s
-        self._stop = asyncio.Event()
-        self._ring_version = 0
-        self._nodes: List[str] = []
-
-    async def start(self, key_count: int) -> Tuple[int, List[str]]:
-        self._ring_version, self._nodes = await self._membership.register(key_count)
-        return self._ring_version, self._nodes
-
-    async def run(self, key_count_fn) -> None:
-        while not self._stop.is_set():
-            try:
-                key_count = await key_count_fn()
-                self._ring_version, self._nodes = await self._membership.heartbeat(key_count)
-            except Exception as exc:
-                logger.warning("heartbeat failed: %s", exc)
-            await asyncio.sleep(self._interval_s)
-
-    def stop(self) -> None:
-        self._stop.set()
-
-    @property
-    def ring_version(self) -> int:
-        return self._ring_version
-
-    @property
-    def nodes(self) -> List[str]:
-        return self._nodes
