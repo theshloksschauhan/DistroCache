@@ -6,7 +6,6 @@ import logging
 import os
 import signal
 import time
-from typing import Optional
 
 import grpc
 
@@ -39,7 +38,7 @@ storage = Storage(
 membership = MembershipClient(BACKEND_URL, NODE_ID, NODE_ADDRESS)
 client_pool = GrpcClientPool()
 rebalance_lock = asyncio.Lock()
-heartbeat_task: Optional[asyncio.Task[None]] = None
+heartbeat_task: asyncio.Task[None] | None = None
 
 
 class CacheNodeService(cache_pb2_grpc.CacheNodeServicer):

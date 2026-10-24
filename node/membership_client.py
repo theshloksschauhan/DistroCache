@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 import httpx
 
@@ -15,18 +15,18 @@ class MembershipClient:
         self._address = address
         self._client = httpx.AsyncClient(timeout=2.0)
 
-    async def register(self, key_count: int) -> Tuple[int, List[str]]:
+    async def register(self, key_count: int) -> tuple[int, list[str]]:
         payload = {"node_id": self._node_id, "address": self._address, "key_count": key_count}
         response = await self._client.post(f"{self._base_url}/membership/register", json=payload)
         response.raise_for_status()
-        data: Dict[str, Any] = response.json()
+        data: dict[str, Any] = response.json()
         return int(data.get("ring_version", 0)), list(data.get("nodes", []))
 
-    async def heartbeat(self, key_count: int) -> Tuple[int, List[str]]:
+    async def heartbeat(self, key_count: int) -> tuple[int, list[str]]:
         payload = {"node_id": self._node_id, "address": self._address, "key_count": key_count}
         response = await self._client.post(f"{self._base_url}/membership/heartbeat", json=payload)
         response.raise_for_status()
-        data: Dict[str, Any] = response.json()
+        data: dict[str, Any] = response.json()
         return int(data.get("ring_version", 0)), list(data.get("nodes", []))
 
     async def deregister(self) -> None:

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import bisect
 import hashlib
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable, List
 
 
 @dataclass(frozen=True)
@@ -15,7 +15,7 @@ class RingNode:
 class ConsistentHashRing:
     def __init__(self, nodes: Iterable[str] | None = None, replicas: int = 128) -> None:
         self._replicas = replicas
-        self._ring: List[RingNode] = []
+        self._ring: list[RingNode] = []
         self._nodes: set[str] = set()
         if nodes:
             for node in nodes:
@@ -36,14 +36,14 @@ class ConsistentHashRing:
         self._nodes.remove(node)
         self._ring = [item for item in self._ring if item.key != node]
 
-    def get_nodes(self, key: str, count: int) -> List[str]:
+    def get_nodes(self, key: str, count: int) -> list[str]:
         if not self._ring or count <= 0:
             return []
         count = min(count, len(self._nodes))
         key_hash = self._hash(key)
         hashes = [item.hash_value for item in self._ring]
         start = bisect.bisect(hashes, key_hash)
-        result: List[str] = []
+        result: list[str] = []
         idx = start
         while len(result) < count:
             if idx >= len(self._ring):

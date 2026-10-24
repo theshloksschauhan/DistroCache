@@ -4,15 +4,14 @@ import asyncio
 import sqlite3
 import threading
 import time
-from typing import Optional
 
 
 class Storage:
     def __init__(
         self,
         db_path: str,
-        ttl_seconds: Optional[int] = None,
-        max_items: Optional[int] = None,
+        ttl_seconds: int | None = None,
+        max_items: int | None = None,
     ) -> None:
         self._db_path = db_path
         self._ttl_seconds = ttl_seconds
@@ -46,10 +45,10 @@ class Storage:
             )
             self._conn.commit()
 
-    async def get(self, key: str) -> Optional[bytes]:
+    async def get(self, key: str) -> bytes | None:
         return await asyncio.to_thread(self._get_sync, key)
 
-    def _get_sync(self, key: str) -> Optional[bytes]:
+    def _get_sync(self, key: str) -> bytes | None:
         now = time.time()
         with self._lock:
             cursor = self._conn.execute(
@@ -71,10 +70,10 @@ class Storage:
             self._conn.commit()
             return value
 
-    async def get_entry(self, key: str) -> Optional[tuple[bytes, Optional[float], int]]:
+    async def get_entry(self, key: str) -> tuple[bytes, float | None, int] | None:
         return await asyncio.to_thread(self._get_entry_sync, key)
 
-    def _get_entry_sync(self, key: str) -> Optional[tuple[bytes, Optional[float], int]]:
+    def _get_entry_sync(self, key: str) -> tuple[bytes, float | None, int] | None:
         now = time.time()
         with self._lock:
             cursor = self._conn.execute(
@@ -119,7 +118,7 @@ class Storage:
         self,
         key: str,
         value: bytes,
-        expires_at: Optional[float],
+        expires_at: float | None,
         version: int,
     ) -> bool:
         return await asyncio.to_thread(self._upsert_replica_sync, key, value, expires_at, version)
@@ -128,7 +127,7 @@ class Storage:
         self,
         key: str,
         value: bytes,
-        expires_at: Optional[float],
+        expires_at: float | None,
         version: int,
     ) -> bool:
         now = time.time()
@@ -168,10 +167,10 @@ class Storage:
         cursor = self._conn.execute("SELECT COUNT(*) FROM cache_entries")
         return int(cursor.fetchone()[0])
 
-    async def list_entries(self) -> list[tuple[str, bytes, Optional[float], int]]:
+    async def list_entries(self) -> list[tuple[str, bytes, float | None, int]]:
         return await asyncio.to_thread(self._list_entries_sync)
 
-    def _list_entries_sync(self) -> list[tuple[str, bytes, Optional[float], int]]:
+    def _list_entries_sync(self) -> list[tuple[str, bytes, float | None, int]]:
         now = time.time()
         with self._lock:
             self._prune_expired(now)
