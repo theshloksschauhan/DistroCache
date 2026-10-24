@@ -19,6 +19,7 @@ from starlette.requests import HTTPConnection
 from distrocache_common.generated import cache_pb2
 from distrocache_common.grpc_client import GrpcClientPool, rpc_error_text
 from distrocache_common.hashing import ConsistentHashRing
+from distrocache_common.hlc import HLC, HybridClock
 
 from .membership import MembershipRegistry
 from .metrics import (
@@ -41,6 +42,19 @@ logger = logging.getLogger("distrocache.api")
 
 # One answering replica is enough. Stage 4 replaces this with R and W.
 _REQUIRED_ACKS = 1
+
+# A versioned write acks if the node stored it (APPLIED) or already held it or a newer copy
+# (ALREADY_CURRENT); the latter is what makes a retried write idempotent.
+_ACK_STATUSES = (cache_pb2.WriteStatus.APPLIED, cache_pb2.WriteStatus.ALREADY_CURRENT)
+
+
+def _version_proto(version: HLC) -> cache_pb2.Version:
+    return cache_pb2.Version(
+        physical_ms=version.physical_ms,
+        logical=version.logical,
+        coordinator_id=version.coordinator_id,
+    )
+
 
 # gRPC's default max reconnect backoff is 120s, so a channel that watched a node die
 # can ignore the restart for two minutes. 100ms floor, 200ms first wait, 2s cap:
@@ -89,6 +103,8 @@ class Settings:
     request_timeout: float = 1.0
     retry_attempts: int = 2
     retry_backoff: float = 0.1
+    ttl_seconds: int = 0
+    coordinator_id: str = "coordinator"
     cors_origins: tuple[str, ...] = ("http://localhost:3000", "http://localhost:5173")
 
 
@@ -109,6 +125,8 @@ def load_settings() -> Settings:
         request_timeout=float(os.getenv("REQUEST_TIMEOUT", "1.0")),
         retry_attempts=int(os.getenv("RETRY_ATTEMPTS", "2")),
         retry_backoff=float(os.getenv("RETRY_BACKOFF", "0.1")),
+        ttl_seconds=int(os.getenv("TTL_SECONDS", "0")),
+        coordinator_id=os.getenv("COORDINATOR_ID", "coordinator"),
         cors_origins=cors_origins,
     )
 
@@ -121,6 +139,7 @@ class Coordinator:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self.clock = HybridClock(settings.coordinator_id)
         self.clients = GrpcClientPool(channel_options=_RECONNECT_BACKOFF)
         self.ws_manager = WebSocketManager()
         self.registry = MembershipRegistry(
@@ -217,11 +236,21 @@ class Coordinator:
     async def grpc_get(self, node: str, key: str) -> cache_pb2.GetResponse:
         return await self._rpc(node, "Get", cache_pb2.GetRequest(key=key))
 
-    async def grpc_put(self, node: str, key: str, value: bytes) -> cache_pb2.PutResponse:
-        return await self._rpc(node, "Put", cache_pb2.PutRequest(key=key, value=value))
+    async def grpc_put(
+        self, node: str, key: str, value: bytes, version: HLC, expires_at: float
+    ) -> cache_pb2.PutResponse:
+        request = cache_pb2.PutRequest(
+            key=key, value=value, version=_version_proto(version), expires_at=expires_at
+        )
+        return await self._rpc(node, "Put", request)
 
-    async def grpc_delete(self, node: str, key: str) -> cache_pb2.DeleteResponse:
-        return await self._rpc(node, "Delete", cache_pb2.DeleteRequest(key=key))
+    async def grpc_delete(
+        self, node: str, key: str, version: HLC, expires_at: float
+    ) -> cache_pb2.DeleteResponse:
+        request = cache_pb2.DeleteRequest(
+            key=key, version=_version_proto(version), expires_at=expires_at
+        )
+        return await self._rpc(node, "Delete", request)
 
     async def replicas_for(self, key: str) -> list[str]:
         nodes = await self.registry.live_addresses()
@@ -381,9 +410,19 @@ async def get_key(key: str, c: CoordinatorDep) -> dict[str, Any] | JSONResponse:
     return _unavailable("get", acks, errors)
 
 
+def _expires_at(ttl_seconds: int) -> float:
+    # Absolute wall-clock expiry so every replica of a key expires together. 0 means no expiry.
+    return time.time() + ttl_seconds if ttl_seconds > 0 else 0.0
+
+
+def _ttl_from(payload: dict[str, Any], default: int) -> int:
+    raw = payload.get("ttl_seconds")
+    return default if raw is None else int(raw)
+
+
 @router.post("/kv/{key}", response_model=None)
 async def put_key(
-    key: str, payload: dict[str, str], c: CoordinatorDep
+    key: str, payload: dict[str, Any], c: CoordinatorDep
 ) -> dict[str, Any] | JSONResponse:
     REQUEST_COUNT.labels(operation="put").inc()
     value = payload.get("value")
@@ -393,9 +432,12 @@ async def put_key(
     if not nodes:
         return _no_nodes("put")
 
+    # One version and one expiry for every replica and every retry, assigned here.
+    version = c.clock.tick()
+    expires_at = _expires_at(_ttl_from(payload, c.settings.ttl_seconds))
     with LATENCY.labels(operation="put").time():
         acks, errors = await _write_votes(
-            "put", nodes, lambda node: c.grpc_put(node, key, value.encode())
+            "put", nodes, lambda node: c.grpc_put(node, key, value.encode(), version, expires_at)
         )
     if acks < _REQUIRED_ACKS:
         return _unavailable("put", acks, errors)
@@ -409,8 +451,11 @@ async def delete_key(key: str, c: CoordinatorDep) -> dict[str, Any] | JSONRespon
     if not nodes:
         return _no_nodes("delete")
 
+    version = c.clock.tick()
     with LATENCY.labels(operation="delete").time():
-        acks, errors = await _write_votes("delete", nodes, lambda node: c.grpc_delete(node, key))
+        acks, errors = await _write_votes(
+            "delete", nodes, lambda node: c.grpc_delete(node, key, version, 0.0)
+        )
     if acks < _REQUIRED_ACKS:
         return _unavailable("delete", acks, errors)
     return {"key": key, "replicas": nodes, "failures": len(errors)}
@@ -429,10 +474,10 @@ async def _write_votes(
         except Exception as exc:
             _failed_vote(operation, node, rpc_error_text(exc), errors)
             continue
-        if response.ok:
+        if response.status in _ACK_STATUSES:
             acks += 1
         else:
-            _failed_vote(operation, node, response.error or "not ok", errors)
+            _failed_vote(operation, node, response.error or "write error", errors)
     return acks, errors
 
 

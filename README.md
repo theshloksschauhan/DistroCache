@@ -8,6 +8,8 @@ Distributed key-value cache with consistent hashing, replication, and a real-tim
 - gRPC cache nodes handle reads/writes. Each node stores entries in its own SQLite file (WAL mode).
 - FastAPI backend routes requests using consistent hashing and tracks cluster health.
 - Nodes register and heartbeat with the backend, and rebalance replicas when membership changes.
+- The coordinator stamps every write with a hybrid logical clock version and an absolute TTL, and
+  replicas apply writes last-writer-wins, so a stale copy never overwrites a newer one.
 - React dashboard receives cluster updates over a WebSocket and also polls `/health` (every 3 s) and `/membership/nodes` (every 5 s).
 - Prometheus scrapes backend metrics.
 - `distrocache_common/` holds the hash ring, gRPC client pool, and generated protobuf stubs shared by the backend and nodes.
@@ -84,7 +86,8 @@ python scripts/gen_proto.py
 
 ## API
 - `GET /kv/{key}`
-- `POST /kv/{key}` with JSON `{ "value": "..." }`
+- `POST /kv/{key}` with JSON `{ "value": "...", "ttl_seconds": 60 }` (`ttl_seconds` optional;
+  falls back to the coordinator's `TTL_SECONDS`)
 - `DELETE /kv/{key}`
 - `GET /health`
 - `GET /membership/nodes`
@@ -120,6 +123,10 @@ API env vars:
 - `REQUEST_TIMEOUT` gRPC request timeout in seconds.
 - `RETRY_ATTEMPTS` retry count for gRPC calls.
 - `RETRY_BACKOFF` base retry backoff in seconds.
+- `TTL_SECONDS` default key lifetime in seconds; the coordinator sets an absolute expiry sent to
+  every replica (0 disables TTL). A request body may override it per write with `ttl_seconds`.
+- `COORDINATOR_ID` identifier mixed into every write version (default `coordinator`); keep it
+  unique per coordinator once there is more than one.
 - `CORS_ORIGINS` to the frontend URL (or `*` for development).
 
 Node env vars:
@@ -130,7 +137,6 @@ Node env vars:
 - `REPLICATION_FACTOR` to align with the API replication factor.
 - `GRPC_TIMEOUT` gRPC timeout for replica transfers.
 - `STORAGE_PATH` to the SQLite file for persistence.
-- `TTL_SECONDS` to expire keys (0 disables TTL).
 - `MAX_ITEMS` to cap SQLite entries, evicting the least recently accessed (0 disables eviction).
 
 Frontend:
@@ -143,8 +149,6 @@ Open correctness limitations. The ones with a reproducing test are marked `xfail
   replica that lacks the key is a 404 even when every replica that holds the key failed.
 - Writes succeed if any one replica acknowledges them.
 - Deletes leave no tombstones, so a replica that missed a delete can still serve the deleted value.
-- Entry versions are per-node counters, not cluster-wide. A timed-out write is retried, and the
-  node can apply that retry as a second write.
 - Nodes listed in `NODE_ADDRESSES` get a second `seed-N` membership record that is later marked down.
 - A rebalance can delete a write that reaches a node while that node is handing the key off.
 - A single coordinator holds membership and routes every request.

@@ -17,9 +17,23 @@ from distrocache_common.grpc_client import GrpcClientPool, rpc_error_text
 from distrocache_common.hashing import ConsistentHashRing
 
 from .membership_client import MembershipClient
-from .storage import Storage
+from .storage import Storage, Version
 
 logger = logging.getLogger("distrocache.node")
+
+
+def _version_tuple(version: cache_pb2.Version) -> Version:
+    return (version.physical_ms, version.logical, version.coordinator_id)
+
+
+def _version_proto(version: Version) -> cache_pb2.Version:
+    return cache_pb2.Version(physical_ms=version[0], logical=version[1], coordinator_id=version[2])
+
+
+def _write_status(applied: bool) -> cache_pb2.WriteStatus.ValueType:
+    # A write that found a newer-or-equal version already stored is ALREADY_CURRENT, which
+    # the coordinator still counts as an ack: that is what makes a retried write idempotent.
+    return cache_pb2.WriteStatus.APPLIED if applied else cache_pb2.WriteStatus.ALREADY_CURRENT
 
 
 @dataclass(frozen=True)
@@ -32,7 +46,6 @@ class NodeConfig:
     heartbeat_interval: float
     replication_factor: int
     grpc_timeout: float
-    ttl_seconds: int
     max_items: int
     storage_path: str
 
@@ -50,7 +63,6 @@ def load_config() -> NodeConfig:
         heartbeat_interval=float(os.getenv("HEARTBEAT_INTERVAL", "2.0")),
         replication_factor=int(os.getenv("REPLICATION_FACTOR", "3")),
         grpc_timeout=float(os.getenv("GRPC_TIMEOUT", "1.0")),
-        ttl_seconds=int(os.getenv("TTL_SECONDS", "0")),
         max_items=int(os.getenv("MAX_ITEMS", "0")),
         storage_path=os.getenv("STORAGE_PATH", "cache.db"),
     )
@@ -73,19 +85,28 @@ class CacheNodeService(cache_pb2_grpc.CacheNodeServicer):
         self, request: cache_pb2.PutRequest, context: grpc.aio.ServicerContext
     ) -> cache_pb2.PutResponse:
         try:
-            await self._storage.put(request.key, request.value)
-            return cache_pb2.PutResponse(ok=True)
+            applied = await self._storage.upsert(
+                request.key,
+                request.value,
+                request.expires_at if request.expires_at > 0 else None,
+                _version_tuple(request.version),
+            )
+            return cache_pb2.PutResponse(status=_write_status(applied))
         except Exception as exc:
-            return cache_pb2.PutResponse(ok=False, error=str(exc))
+            return cache_pb2.PutResponse(status=cache_pb2.WriteStatus.ERROR, error=str(exc))
 
     async def Delete(
         self, request: cache_pb2.DeleteRequest, context: grpc.aio.ServicerContext
     ) -> cache_pb2.DeleteResponse:
+        # Stage 3 still removes the row; the delete-resurrection bug keeps its xfail until
+        # Stage 5 writes a tombstone. The version already travels so only behaviour changes then.
         try:
-            ok = await self._storage.delete(request.key)
-            return cache_pb2.DeleteResponse(ok=ok)
+            removed = await self._storage.delete(request.key)
+            # A replica that did not hold the key is already in the deleted state, so an absent
+            # row acks the delete too (ALREADY_CURRENT) rather than failing the vote.
+            return cache_pb2.DeleteResponse(status=_write_status(removed))
         except Exception as exc:
-            return cache_pb2.DeleteResponse(ok=False, error=str(exc))
+            return cache_pb2.DeleteResponse(status=cache_pb2.WriteStatus.ERROR, error=str(exc))
 
     async def ListEntries(
         self, request: cache_pb2.ListEntriesRequest, context: grpc.aio.ServicerContext
@@ -99,7 +120,7 @@ class CacheNodeService(cache_pb2_grpc.CacheNodeServicer):
                     key=key,
                     value=value if include_values else b"",
                     expires_at=expires_at or 0.0,
-                    version=version,
+                    version=_version_proto(version),
                 )
             )
         return cache_pb2.ListEntriesResponse(entries=response_entries)
@@ -117,7 +138,7 @@ class CacheNodeService(cache_pb2_grpc.CacheNodeServicer):
                 key=request.key,
                 value=value,
                 expires_at=expires_at or 0.0,
-                version=version,
+                version=_version_proto(version),
             ),
         )
 
@@ -125,15 +146,15 @@ class CacheNodeService(cache_pb2_grpc.CacheNodeServicer):
         self, request: cache_pb2.PutReplicaRequest, context: grpc.aio.ServicerContext
     ) -> cache_pb2.PutReplicaResponse:
         try:
-            applied = await self._storage.upsert_replica(
+            applied = await self._storage.upsert(
                 request.key,
                 request.value,
                 request.expires_at if request.expires_at > 0 else None,
-                request.version,
+                _version_tuple(request.version),
             )
-            return cache_pb2.PutReplicaResponse(ok=True, applied=applied)
+            return cache_pb2.PutReplicaResponse(status=_write_status(applied))
         except Exception as exc:
-            return cache_pb2.PutReplicaResponse(ok=False, applied=False, error=str(exc))
+            return cache_pb2.PutReplicaResponse(status=cache_pb2.WriteStatus.ERROR, error=str(exc))
 
     async def Health(
         self, request: cache_pb2.HealthRequest, context: grpc.aio.ServicerContext
@@ -156,7 +177,6 @@ class Node:
         self.config = config
         self.storage = Storage(
             db_path=config.storage_path,
-            ttl_seconds=config.ttl_seconds if config.ttl_seconds > 0 else None,
             max_items=config.max_items if config.max_items > 0 else None,
         )
         self.membership = MembershipClient(config.backend_url, config.node_id, config.node_address)
@@ -260,13 +280,19 @@ class Node:
                             key=key,
                             value=value,
                             expires_at=expires_at or 0.0,
-                            version=version,
+                            version=_version_proto(version),
                         ),
                         timeout=self.config.grpc_timeout,
                     )
-                    if response.ok and response.applied:
-                        replicas_restored += 1
+                    # APPLIED or ALREADY_CURRENT both mean the owner now holds this version or
+                    # newer, so the key is safely replicated there.
+                    if response.status in (
+                        cache_pb2.WriteStatus.APPLIED,
+                        cache_pb2.WriteStatus.ALREADY_CURRENT,
+                    ):
                         applied_any = True
+                        if response.status == cache_pb2.WriteStatus.APPLIED:
+                            replicas_restored += 1
                 except Exception as exc:
                     logger.warning(
                         "rebalance push of %s to %s failed: %s",

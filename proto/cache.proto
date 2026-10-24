@@ -2,6 +2,22 @@ syntax = "proto3";
 
 package cache;
 
+// A coordinator-assigned hybrid logical clock value. Compared as the tuple
+// (physical_ms, logical, coordinator_id); last-writer-wins uses that order.
+message Version {
+  int64 physical_ms = 1;
+  int64 logical = 2;
+  string coordinator_id = 3;
+}
+
+// Outcome of a versioned write (Put, Delete, PutReplica).
+enum WriteStatus {
+  WRITE_STATUS_UNSPECIFIED = 0;
+  APPLIED = 1;          // incoming version was newer; the node wrote it
+  ALREADY_CURRENT = 2;  // the node already held this version or a newer one
+  ERROR = 3;            // the store raised; see `error`
+}
+
 message GetRequest {
   string key = 1;
 }
@@ -15,19 +31,23 @@ message GetResponse {
 message PutRequest {
   string key = 1;
   bytes value = 2;
+  Version version = 3;
+  double expires_at = 4;
 }
 
 message PutResponse {
-  bool ok = 1;
+  WriteStatus status = 1;
   string error = 2;
 }
 
 message DeleteRequest {
   string key = 1;
+  Version version = 2;
+  double expires_at = 3;
 }
 
 message DeleteResponse {
-  bool ok = 1;
+  WriteStatus status = 1;
   string error = 2;
 }
 
@@ -35,7 +55,7 @@ message Entry {
   string key = 1;
   bytes value = 2;
   double expires_at = 3;
-  int64 version = 4;
+  Version version = 4;
 }
 
 message ListEntriesRequest {
@@ -60,13 +80,12 @@ message PutReplicaRequest {
   string key = 1;
   bytes value = 2;
   double expires_at = 3;
-  int64 version = 4;
+  Version version = 4;
 }
 
 message PutReplicaResponse {
-  bool ok = 1;
-  bool applied = 2;
-  string error = 3;
+  WriteStatus status = 1;
+  string error = 2;
 }
 
 message HealthRequest {}
