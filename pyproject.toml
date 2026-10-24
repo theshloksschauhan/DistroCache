@@ -1,0 +1,38 @@
+[project]
+name = "distrocache"
+version = "0.1.0"
+description = "Distributed key-value cache: FastAPI coordinator, gRPC storage nodes, SQLite per node."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Shlok Shoorveer Singh Chauhan" }]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["backend", "node", "distrocache_common"]
+omit = ["distrocache_common/generated/*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["distrocache_common/generated"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["backend", "distrocache_common", "node"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["backend", "node", "distrocache_common"]
+exclude = ["^distrocache_common/generated/"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["distrocache_common.generated.*"]
+follow_imports = "skip"

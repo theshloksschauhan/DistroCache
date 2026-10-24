@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional
 
 
 @dataclass
@@ -16,10 +15,10 @@ class NodeRecord:
 
 
 class MembershipRegistry:
-    def __init__(self, timeout_seconds: float, seed_nodes: Optional[List[str]] = None) -> None:
+    def __init__(self, timeout_seconds: float, seed_nodes: list[str] | None = None) -> None:
         self._timeout_seconds = timeout_seconds
         self._lock = asyncio.Lock()
-        self._nodes: Dict[str, NodeRecord] = {}
+        self._nodes: dict[str, NodeRecord] = {}
         self._ring_version = 0
         if seed_nodes:
             now = time.time()
@@ -77,7 +76,7 @@ class MembershipRegistry:
                 self._ring_version += 1
             return self._ring_version
 
-    async def prune_expired(self) -> List[NodeRecord]:
+    async def prune_expired(self) -> list[NodeRecord]:
         async with self._lock:
             now = time.time()
             changed = False
@@ -89,11 +88,11 @@ class MembershipRegistry:
                 self._ring_version += 1
             return list(self._nodes.values())
 
-    async def snapshot(self) -> List[NodeRecord]:
+    async def snapshot(self) -> list[NodeRecord]:
         async with self._lock:
             return list(self._nodes.values())
 
-    async def live_addresses(self) -> List[str]:
+    async def live_addresses(self) -> list[str]:
         async with self._lock:
             return [record.address for record in self._nodes.values() if record.status == "up"]
 

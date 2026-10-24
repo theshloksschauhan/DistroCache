@@ -1,4 +1,4 @@
-from backend.hashing import ConsistentHashRing
+from distrocache_common.hashing import ConsistentHashRing
 
 
 def test_consistent_hash_basic() -> None:

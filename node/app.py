@@ -6,13 +6,13 @@ import logging
 import os
 import signal
 import time
-from typing import Optional
 
 import grpc
 
-from .generated import cache_pb2, cache_pb2_grpc
-from .grpc_client import GrpcClientPool
-from .hashing import ConsistentHashRing
+from distrocache_common.generated import cache_pb2, cache_pb2_grpc
+from distrocache_common.grpc_client import GrpcClientPool
+from distrocache_common.hashing import ConsistentHashRing
+
 from .membership_client import MembershipClient
 from .storage import Storage
 
@@ -38,24 +38,30 @@ storage = Storage(
 membership = MembershipClient(BACKEND_URL, NODE_ID, NODE_ADDRESS)
 client_pool = GrpcClientPool()
 rebalance_lock = asyncio.Lock()
-heartbeat_task: Optional[asyncio.Task[None]] = None
+heartbeat_task: asyncio.Task[None] | None = None
 
 
 class CacheNodeService(cache_pb2_grpc.CacheNodeServicer):
-    async def Get(self, request: cache_pb2.GetRequest, context: grpc.aio.ServicerContext) -> cache_pb2.GetResponse:
+    async def Get(
+        self, request: cache_pb2.GetRequest, context: grpc.aio.ServicerContext
+    ) -> cache_pb2.GetResponse:
         value = await storage.get(request.key)
         if value is None:
             return cache_pb2.GetResponse(found=False)
         return cache_pb2.GetResponse(found=True, value=value)
 
-    async def Put(self, request: cache_pb2.PutRequest, context: grpc.aio.ServicerContext) -> cache_pb2.PutResponse:
+    async def Put(
+        self, request: cache_pb2.PutRequest, context: grpc.aio.ServicerContext
+    ) -> cache_pb2.PutResponse:
         try:
             await storage.put(request.key, request.value)
             return cache_pb2.PutResponse(ok=True)
         except Exception as exc:
             return cache_pb2.PutResponse(ok=False, error=str(exc))
 
-    async def Delete(self, request: cache_pb2.DeleteRequest, context: grpc.aio.ServicerContext) -> cache_pb2.DeleteResponse:
+    async def Delete(
+        self, request: cache_pb2.DeleteRequest, context: grpc.aio.ServicerContext
+    ) -> cache_pb2.DeleteResponse:
         try:
             ok = await storage.delete(request.key)
             return cache_pb2.DeleteResponse(ok=ok)
@@ -110,7 +116,9 @@ class CacheNodeService(cache_pb2_grpc.CacheNodeServicer):
         except Exception as exc:
             return cache_pb2.PutReplicaResponse(ok=False, applied=False, error=str(exc))
 
-    async def Health(self, request: cache_pb2.HealthRequest, context: grpc.aio.ServicerContext) -> cache_pb2.HealthResponse:
+    async def Health(
+        self, request: cache_pb2.HealthRequest, context: grpc.aio.ServicerContext
+    ) -> cache_pb2.HealthResponse:
         return cache_pb2.HealthResponse(node_id=NODE_ID, ok=True)
 
 

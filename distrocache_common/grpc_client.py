@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Dict
 
 import grpc
 
@@ -10,8 +9,8 @@ from .generated import cache_pb2_grpc
 
 class GrpcClientPool:
     def __init__(self) -> None:
-        self._channels: Dict[str, grpc.aio.Channel] = {}
-        self._stubs: Dict[str, cache_pb2_grpc.CacheNodeStub] = {}
+        self._channels: dict[str, grpc.aio.Channel] = {}
+        self._stubs: dict[str, cache_pb2_grpc.CacheNodeStub] = {}
         self._lock = asyncio.Lock()
 
     async def get_stub(self, target: str) -> cache_pb2_grpc.CacheNodeStub:

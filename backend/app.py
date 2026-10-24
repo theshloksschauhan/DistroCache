@@ -4,15 +4,18 @@ import asyncio
 import logging
 import os
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Response, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import generate_latest
 
-from .generated import cache_pb2
-from .grpc_client import GrpcClientPool
-from .hashing import ConsistentHashRing
+from distrocache_common.generated import cache_pb2
+from distrocache_common.grpc_client import GrpcClientPool
+from distrocache_common.hashing import ConsistentHashRing
+
 from .membership import MembershipRegistry
 from .metrics import (
     ACTIVE_NODES,
@@ -42,9 +45,11 @@ CORS_ORIGINS_RAW = os.getenv(
     "CORS_ORIGINS",
     "http://localhost:3000,http://localhost:5173",
 )
-CORS_ORIGINS = ["*"] if CORS_ORIGINS_RAW.strip() == "*" else [
-    origin.strip() for origin in CORS_ORIGINS_RAW.split(",") if origin.strip()
-]
+CORS_ORIGINS = (
+    ["*"]
+    if CORS_ORIGINS_RAW.strip() == "*"
+    else [origin.strip() for origin in CORS_ORIGINS_RAW.split(",") if origin.strip()]
+)
 
 clients = GrpcClientPool()
 ws_manager = WebSocketManager()
@@ -56,7 +61,16 @@ recent_rebalances: list[dict[str, Any]] = []
 
 cluster_state: dict[str, dict[str, Any]] = {}
 
-app = FastAPI(title="DistroCache API")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    asyncio.create_task(refresh_health())
+    asyncio.create_task(prune_membership())
+    yield
+    await clients.close()
+
+
+app = FastAPI(title="DistroCache API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
@@ -87,7 +101,9 @@ async def refresh_health() -> None:
             }
             NODE_STATUS.labels(node=node).set(1 if ok else 0)
         ACTIVE_NODES.set(len(nodes))
-        await ws_manager.broadcast({"type": "cluster", "nodes": cluster_state, "rebalances": recent_rebalances[-10:]})
+        await ws_manager.broadcast(
+            {"type": "cluster", "nodes": cluster_state, "rebalances": recent_rebalances[-10:]}
+        )
         await asyncio.sleep(HEALTH_INTERVAL)
 
 
@@ -96,17 +112,6 @@ async def prune_membership() -> None:
         nodes = await registry.prune_expired()
         ACTIVE_NODES.set(len([node for node in nodes if node.status == "up"]))
         await asyncio.sleep(HEARTBEAT_INTERVAL)
-
-
-@app.on_event("startup")
-async def on_startup() -> None:
-    asyncio.create_task(refresh_health())
-    asyncio.create_task(prune_membership())
-
-
-@app.on_event("shutdown")
-async def on_shutdown() -> None:
-    await clients.close()
 
 
 @app.get("/health")
@@ -229,7 +234,9 @@ async def _grpc_put(node: str, key: str, value: bytes) -> cache_pb2.PutResponse:
     last_exc: Exception | None = None
     for attempt in range(RETRY_ATTEMPTS):
         try:
-            return await stub.Put(cache_pb2.PutRequest(key=key, value=value), timeout=REQUEST_TIMEOUT)
+            return await stub.Put(
+                cache_pb2.PutRequest(key=key, value=value), timeout=REQUEST_TIMEOUT
+            )
         except Exception as exc:
             last_exc = exc
             if attempt < RETRY_ATTEMPTS - 1:

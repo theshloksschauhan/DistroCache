@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import json
-from typing import Any, List
+from typing import Any
 
 from fastapi import WebSocket
 
 
 class WebSocketManager:
     def __init__(self) -> None:
-        self._connections: List[WebSocket] = []
+        self._connections: list[WebSocket] = []
 
     async def connect(self, websocket: WebSocket) -> None:
         await websocket.accept()

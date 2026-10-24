@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY proto /app/proto
 COPY scripts /app/scripts
+COPY distrocache_common /app/distrocache_common
 COPY node /app/node
 
 RUN python /app/scripts/gen_proto.py

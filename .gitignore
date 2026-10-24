@@ -1,6 +1,32 @@
-.vercel
-.venv-
-.venv/
+# Python
 __pycache__/
 *.py[cod]
+
+# Virtual environments
+.venv/
+.venv-*
+venv/
+env/
+
+# Tool caches and coverage
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Frontend
+node_modules/
+dist/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local SQLite data
+*.db
+*.db-wal
+*.db-shm
