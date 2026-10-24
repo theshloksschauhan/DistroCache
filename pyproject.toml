@@ -13,6 +13,8 @@ pythonpath = ["."]
 testpaths = ["tests"]
 # Integration tests start real processes; run them explicitly with `pytest -m integration`.
 addopts = ["-m", "not integration"]
+# Default "all" keeps every test's sqlite files and logs. One integration run left 14 MB.
+tmp_path_retention_policy = "failed"
 markers = ["integration: starts a real coordinator and node processes"]
 # A hung cluster must fail the test, not the whole CI job.
 timeout = 300
