@@ -164,8 +164,10 @@ class Storage:
         return await asyncio.to_thread(self._count_sync)
 
     def _count_sync(self) -> int:
-        cursor = self._conn.execute("SELECT COUNT(*) FROM cache_entries")
-        return int(cursor.fetchone()[0])
+        # The connection is shared across to_thread workers; every use must hold the lock.
+        with self._lock:
+            cursor = self._conn.execute("SELECT COUNT(*) FROM cache_entries")
+            return int(cursor.fetchone()[0])
 
     async def list_entries(self) -> list[tuple[str, bytes, float | None, int]]:
         return await asyncio.to_thread(self._list_entries_sync)
