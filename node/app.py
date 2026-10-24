@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import os
 import signal
+import sys
 import time
 from collections.abc import Coroutine
 from dataclasses import dataclass
@@ -268,9 +268,18 @@ class Node:
 
 def _install_stop_handlers(stop_event: asyncio.Event) -> None:
     loop = asyncio.get_running_loop()
+    if sys.platform == "win32":
+        # The Windows event loop has no add_signal_handler. A plain handler runs on the main
+        # thread between bytecodes, so hand the stop over to the loop thread-safely.
+        # CTRL_BREAK_EVENT (what supervisors and the test harness send) arrives as SIGBREAK.
+        def _on_signal(signum: int, frame: object) -> None:
+            loop.call_soon_threadsafe(stop_event.set)
+
+        signal.signal(signal.SIGBREAK, _on_signal)
+        signal.signal(signal.SIGINT, _on_signal)
+        return
     for sig in (signal.SIGTERM, signal.SIGINT):
-        with contextlib.suppress(NotImplementedError):
-            loop.add_signal_handler(sig, stop_event.set)
+        loop.add_signal_handler(sig, stop_event.set)
 
 
 async def _serve(config: NodeConfig) -> None:
