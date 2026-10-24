@@ -73,6 +73,8 @@ def wait_until(
         try:
             if predicate():
                 return
+        except HarnessError:
+            raise  # e.g. the process died: waiting longer can't help
         except Exception as exc:  # the cluster may still be starting
             last_error = exc
         time.sleep(interval)
