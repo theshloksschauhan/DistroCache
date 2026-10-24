@@ -37,6 +37,8 @@ python_version = "3.11"
 files = ["backend", "node", "distrocache_common"]
 exclude = ["^distrocache_common/generated/"]
 ignore_missing_imports = true
+# The default SQLite cache would put .db files in the working tree.
+sqlite_cache = false
 
 [[tool.mypy.overrides]]
 module = ["distrocache_common.generated.*"]
