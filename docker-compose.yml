@@ -111,6 +111,8 @@ services:
     environment:
       NODE_ADDRESSES: "node1:50051,node2:50051,node3:50051,node4:50051,node5:50051"
       REPLICATION_FACTOR: 3
+      READ_QUORUM: 2
+      WRITE_QUORUM: 2
       HEALTH_INTERVAL: 2.0
       HEARTBEAT_INTERVAL: 2.0
       HEARTBEAT_TIMEOUT: 6.0

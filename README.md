@@ -10,6 +10,8 @@ Distributed key-value cache with consistent hashing, replication, and a real-tim
 - Nodes register and heartbeat with the backend, and rebalance replicas when membership changes.
 - The coordinator stamps every write with a hybrid logical clock version and an absolute TTL, and
   replicas apply writes last-writer-wins, so a stale copy never overwrites a newer one.
+- Reads and writes use tunable quorums (N, R, W) with parallel fan-out: a write returns once W
+  replicas ack, a read once R respond and returns the highest version seen.
 - React dashboard receives cluster updates over a WebSocket and also polls `/health` (every 3 s) and `/membership/nodes` (every 5 s).
 - Prometheus scrapes backend metrics.
 - `distrocache_common/` holds the hash ring, gRPC client pool, and generated protobuf stubs shared by the backend and nodes.
@@ -85,10 +87,12 @@ python scripts/gen_proto.py
 ```
 
 ## API
-- `GET /kv/{key}`
+- `GET /kv/{key}` — 200 `{key, value, node, acks, version}`, 404 if no replica holds it, 503 if
+  fewer than R replicas respond.
 - `POST /kv/{key}` with JSON `{ "value": "...", "ttl_seconds": 60 }` (`ttl_seconds` optional;
-  falls back to the coordinator's `TTL_SECONDS`)
-- `DELETE /kv/{key}`
+  falls back to the coordinator's `TTL_SECONDS`) — 200 `{key, replicas, acks, version}` once W
+  replicas ack, 503 otherwise.
+- `DELETE /kv/{key}` — same quorum and body shape as `POST`.
 - `GET /health`
 - `GET /membership/nodes`
 - `POST /membership/register`
@@ -116,7 +120,10 @@ Install the git hooks with `pre-commit install`.
 
 API env vars:
 - `NODE_ADDRESSES` to a comma-separated list of reachable gRPC nodes.
-- `REPLICATION_FACTOR` to the desired replication count.
+- `REPLICATION_FACTOR` (N) to the desired replication count.
+- `READ_QUORUM` (R) replicas that must respond to a read (default 2; `1 <= R <= N`).
+- `WRITE_QUORUM` (W) replicas that must ack a write (default 2; `1 <= W <= N`). `R + W > N`
+  gives read-your-writes.
 - `HEALTH_INTERVAL` for cluster polling interval.
 - `HEARTBEAT_INTERVAL` for membership pruning checks.
 - `HEARTBEAT_TIMEOUT` for marking nodes down.
@@ -145,9 +152,6 @@ Frontend:
 ## Known limitations (being addressed)
 Open correctness limitations. The ones with a reproducing test are marked `xfail` in `tests/`.
 
-- Reads return the first replica that has the key; there is no read quorum. One answering
-  replica that lacks the key is a 404 even when every replica that holds the key failed.
-- Writes succeed if any one replica acknowledges them.
 - Deletes leave no tombstones, so a replica that missed a delete can still serve the deleted value.
 - Nodes listed in `NODE_ADDRESSES` get a second `seed-N` membership record that is later marked down.
 - A rebalance can delete a write that reaches a node while that node is handing the key off.
