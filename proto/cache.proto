@@ -31,12 +31,6 @@ message DeleteResponse {
   string error = 2;
 }
 
-message EntryMetadata {
-  string key = 1;
-  double expires_at = 2;
-  int64 version = 3;
-}
-
 message Entry {
   string key = 1;
   bytes value = 2;
