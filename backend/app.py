@@ -42,6 +42,17 @@ logger = logging.getLogger("distrocache.api")
 # One answering replica is enough. Stage 4 replaces this with R and W.
 _REQUIRED_ACKS = 1
 
+# gRPC's default max reconnect backoff is 120s, so a channel that watched a node die
+# can ignore the restart for two minutes. 100ms floor, 200ms first wait, 2s cap:
+# a short blip reconnects inside one REQUEST_TIMEOUT (1s), a dead node is probed at
+# most 10 times a second and then once every 2s, and 2s still fits in a few seconds
+# on top of the sequential fan-out's per-attempt deadline.
+_RECONNECT_BACKOFF: tuple[tuple[str, int], ...] = (
+    ("grpc.min_reconnect_backoff_ms", 100),
+    ("grpc.initial_reconnect_backoff_ms", 200),
+    ("grpc.max_reconnect_backoff_ms", 2000),
+)
+
 
 def _retryable(exc: BaseException) -> bool:
     """True only for statuses that mean 'the call may work if sent again'."""
@@ -105,7 +116,7 @@ class Coordinator:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.clients = GrpcClientPool()
+        self.clients = GrpcClientPool(channel_options=_RECONNECT_BACKOFF)
         self.ws_manager = WebSocketManager()
         self.registry = MembershipRegistry(
             timeout_seconds=settings.heartbeat_timeout, seed_nodes=settings.node_addresses

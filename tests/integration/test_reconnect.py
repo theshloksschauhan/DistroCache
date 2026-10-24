@@ -55,11 +55,6 @@ def _backoff_delays_ms(log_text: str, address: str) -> list[int]:
     return delays
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="gRPC's default reconnect backoff grows past 5s while a node is down",
-)
 def test_write_reaches_a_restarted_node_within_a_few_seconds(
     cluster_factory: ClusterFactory,
 ) -> None:
