@@ -12,9 +12,9 @@ from fastapi import FastAPI, HTTPException, Response, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import generate_latest
 
-from common.generated import cache_pb2
-from common.grpc_client import GrpcClientPool
-from common.hashing import ConsistentHashRing
+from distrocache_common.generated import cache_pb2
+from distrocache_common.grpc_client import GrpcClientPool
+from distrocache_common.hashing import ConsistentHashRing
 
 from .membership import MembershipRegistry
 from .metrics import (

@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PROTO_DIR = ROOT / "proto"
-OUT_DIR = ROOT / "common" / "generated"
+OUT_DIR = ROOT / "distrocache_common" / "generated"
 
 
 def main() -> None:

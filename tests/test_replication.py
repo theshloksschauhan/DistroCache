@@ -1,4 +1,4 @@
-from common.hashing import ConsistentHashRing
+from distrocache_common.hashing import ConsistentHashRing
 
 
 def test_replication_respects_node_count() -> None:

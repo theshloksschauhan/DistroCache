@@ -1,4 +1,4 @@
-exclude: ^common/generated/
+exclude: ^distrocache_common/generated/
 
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit

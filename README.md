@@ -10,7 +10,7 @@ Distributed key-value cache with consistent hashing, replication, and a real-tim
 - Nodes register and heartbeat with the backend, and rebalance replicas when membership changes.
 - React dashboard receives cluster updates over a WebSocket and also polls `/health` (every 3 s) and `/membership/nodes` (every 5 s).
 - Prometheus scrapes backend metrics.
-- `common/` holds the hash ring, gRPC client pool, and generated protobuf stubs shared by the backend and nodes.
+- `distrocache_common/` holds the hash ring, gRPC client pool, and generated protobuf stubs shared by the backend and nodes.
 
 ## Quick start (Docker)
 ```bash
@@ -77,7 +77,7 @@ npm ci
 npm run dev
 ```
 
-The generated gRPC code in `common/generated/` is committed. After editing `proto/cache.proto`, regenerate it with:
+The generated gRPC code in `distrocache_common/generated/` is committed. After editing `proto/cache.proto`, regenerate it with:
 ```bash
 python scripts/gen_proto.py
 ```

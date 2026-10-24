@@ -9,9 +9,9 @@ import time
 
 import grpc
 
-from common.generated import cache_pb2, cache_pb2_grpc
-from common.grpc_client import GrpcClientPool
-from common.hashing import ConsistentHashRing
+from distrocache_common.generated import cache_pb2, cache_pb2_grpc
+from distrocache_common.grpc_client import GrpcClientPool
+from distrocache_common.hashing import ConsistentHashRing
 
 from .membership_client import MembershipClient
 from .storage import Storage
