@@ -21,7 +21,7 @@ class FakeStub:
     ) -> cache_pb2.PutReplicaResponse:
         self.pushed.append(request)
         await self.on_push(request)
-        return cache_pb2.PutReplicaResponse(ok=True, applied=True)
+        return cache_pb2.PutReplicaResponse(status=cache_pb2.WriteStatus.APPLIED)
 
 
 class FakePool:
@@ -45,7 +45,6 @@ def _config(tmp_path: Path) -> NodeConfig:
         heartbeat_interval=1.0,
         replication_factor=2,
         grpc_timeout=0.5,
-        ttl_seconds=0,
         max_items=0,
         storage_path=str(tmp_path / "cache.db"),
     )
@@ -62,14 +61,15 @@ def test_rebalance_keeps_a_write_that_lands_during_the_push(tmp_path: Path) -> N
 
         async def write_during_push(request: cache_pb2.PutReplicaRequest) -> None:
             # A client write reaches this node after the snapshot but before the delete.
+            # Its version is newer than the one being pushed, so LWW keeps it.
             if request.value == b"old":
-                await node.storage.put("moving", b"new")
+                await node.storage.upsert("moving", b"new", None, (2, 0, "c"))
 
         stub = FakeStub(write_during_push)
         node = Node(_config(tmp_path), client_pool=FakePool(stub))  # type: ignore[arg-type]
         try:
             await node.storage.initialize()
-            await node.storage.put("moving", b"old")
+            await node.storage.upsert("moving", b"old", None, (1, 0, "c"))
 
             # This node is not an owner in the new ring, so it hands the key off and deletes it.
             await node._rebalance_once(["127.0.0.1:2", "127.0.0.1:3"])
@@ -106,7 +106,7 @@ def test_rebalance_logs_a_failed_push(tmp_path: Path, caplog: pytest.LogCaptureF
         node = Node(_config(tmp_path), client_pool=BoomPool())  # type: ignore[arg-type]
         try:
             await node.storage.initialize()
-            await node.storage.put("moving", b"old")
+            await node.storage.upsert("moving", b"old", None, (1, 0, "c"))
             caplog.set_level(logging.WARNING, logger="distrocache.node")
             await node._rebalance_once(["127.0.0.1:2", "127.0.0.1:3"])
         finally:

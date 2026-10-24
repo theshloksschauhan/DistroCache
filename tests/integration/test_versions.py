@@ -13,11 +13,6 @@ pytestmark = pytest.mark.integration
 ClusterFactory = Callable[..., Cluster]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="Stage 3: versions are per-node counters, so an older value with a higher count wins",
-)
 def test_rebalance_does_not_replace_newer_value_with_older(cluster_factory: ClusterFactory) -> None:
     # Long timeout: the killed node must stay "up" so the ring (and ring_version) never changes.
     cluster = cluster_factory(nodes=3, heartbeat_timeout=60)

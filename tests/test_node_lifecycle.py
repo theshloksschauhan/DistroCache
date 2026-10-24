@@ -27,7 +27,6 @@ def _config(tmp_path: Path) -> NodeConfig:
         heartbeat_interval=0.05,
         replication_factor=3,
         grpc_timeout=0.5,
-        ttl_seconds=0,
         max_items=0,
         storage_path=str(tmp_path / "cache.db"),
     )

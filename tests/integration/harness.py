@@ -535,9 +535,17 @@ class Cluster:
         response = self._call_node(handle, "Health", cache_pb2.HealthRequest())
         return bool(response.ok)
 
-    def node_entry(self, handle: NodeHandle, key: str) -> tuple[str, int] | None:
-        """(value, version) stored on that node, bypassing the coordinator."""
+    def node_entry(self, handle: NodeHandle, key: str) -> tuple[str, tuple[int, int, str]] | None:
+        """(value, version) stored on that node, bypassing the coordinator.
+
+        The version is the coordinator's HLC as the tuple (physical_ms, logical, coordinator_id).
+        """
         response = self._call_node(handle, "GetEntry", cache_pb2.GetEntryRequest(key=key))
         if not response.found:
             return None
-        return response.entry.value.decode("utf-8"), int(response.entry.version)
+        version = response.entry.version
+        return response.entry.value.decode("utf-8"), (
+            version.physical_ms,
+            version.logical,
+            version.coordinator_id,
+        )

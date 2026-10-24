@@ -49,8 +49,11 @@ def test_cluster_serves_writes_and_reads(cluster_factory: ClusterFactory) -> Non
     response = cluster.get("alpha")
     assert response.status_code == 200
     assert response.json()["value"] == "1"
-    for handle in cluster.handles_for("alpha"):
-        assert cluster.node_entry(handle, "alpha") == ("1", 1), handle.node_id
+    # Every replica holds the value under the one coordinator-assigned version.
+    entries = [cluster.node_entry(handle, "alpha") for handle in cluster.handles_for("alpha")]
+    assert all(entry is not None and entry[0] == "1" for entry in entries), entries
+    versions = {entry[1] for entry in entries if entry is not None}
+    assert len(versions) == 1, f"replicas disagree on the version: {entries}"
 
 
 def test_acknowledged_write_survives_hard_kill_and_restart(cluster_factory: ClusterFactory) -> None:
@@ -62,7 +65,8 @@ def test_acknowledged_write_survives_hard_kill_and_restart(cluster_factory: Clus
     assert not victim.process.running
     cluster.restart(victim)
 
-    assert cluster.node_entry(victim, "durable") == ("kept", 1), (
+    entry = cluster.node_entry(victim, "durable")
+    assert entry is not None and entry[0] == "kept", (
         "a write acknowledged before kill() was lost from the node's SQLite file"
     )
 

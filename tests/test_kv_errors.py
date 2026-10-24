@@ -14,7 +14,10 @@ from starlette.responses import JSONResponse
 
 from backend.app import Coordinator, Settings, create_app, get_key, put_key
 from distrocache_common.generated import cache_pb2
+from distrocache_common.hlc import HLC
 from tests.integration.harness import parse_metric
+
+_VERSION = HLC(1, 0, "coordinator")
 
 
 class StatusError(Exception):
@@ -44,7 +47,7 @@ class ScriptedStub:
         if self.errors:
             raise self.errors.pop(0)
         if found_value is None:
-            return cache_pb2.PutResponse(ok=True)
+            return cache_pb2.PutResponse(status=cache_pb2.WriteStatus.APPLIED)
         return cache_pb2.GetResponse(found=True, value=found_value)
 
     async def Get(self, request: cache_pb2.GetRequest, timeout: float) -> cache_pb2.GetResponse:
@@ -115,7 +118,9 @@ def test_permanent_errors_are_not_retried(method: str) -> None:
     coordinator = _coordinator()
     coordinator.clients = StubPool(stub)  # type: ignore[assignment]
     call = getattr(coordinator, method)
-    args = ("127.0.0.1:1", "k", b"v") if method == "grpc_put" else ("127.0.0.1:1", "k")
+    args = (
+        ("127.0.0.1:1", "k", b"v", _VERSION, 0.0) if method == "grpc_put" else ("127.0.0.1:1", "k")
+    )
 
     with pytest.raises(StatusError):
         asyncio.run(call(*args))
@@ -178,8 +183,10 @@ def test_get_miss_does_not_count_as_a_request_failure() -> None:
 def test_rejected_write_is_a_failed_vote() -> None:
     coordinator = _coordinator_for("127.0.0.1:9", replication_factor=1)
 
-    async def rejected(node: str, key: str, value: bytes) -> cache_pb2.PutResponse:
-        return cache_pb2.PutResponse(ok=False, error="disk full")
+    async def rejected(
+        node: str, key: str, value: bytes, version: HLC, expires_at: float
+    ) -> cache_pb2.PutResponse:
+        return cache_pb2.PutResponse(status=cache_pb2.WriteStatus.ERROR, error="disk full")
 
     coordinator.grpc_put = rejected  # type: ignore[method-assign]
     status, body = _invoke(put_key("k", {"value": "v"}, coordinator))
@@ -198,7 +205,9 @@ def test_transient_errors_are_retried(method: str, status: grpc.StatusCode) -> N
     coordinator = _coordinator()
     coordinator.clients = StubPool(stub)  # type: ignore[assignment]
     call = getattr(coordinator, method)
-    args = ("127.0.0.1:1", "k", b"v") if method == "grpc_put" else ("127.0.0.1:1", "k")
+    args = (
+        ("127.0.0.1:1", "k", b"v", _VERSION, 0.0) if method == "grpc_put" else ("127.0.0.1:1", "k")
+    )
 
     asyncio.run(call(*args))
 
@@ -211,7 +220,7 @@ def test_retries_stop_at_the_attempt_limit() -> None:
     coordinator.clients = StubPool(stub)  # type: ignore[assignment]
 
     with pytest.raises(StatusError):
-        asyncio.run(coordinator.grpc_put("127.0.0.1:1", "k", b"v"))
+        asyncio.run(coordinator.grpc_put("127.0.0.1:1", "k", b"v", _VERSION, 0.0))
 
     assert stub.calls == 2
 
@@ -245,7 +254,9 @@ def test_no_nodes_is_503_with_the_vote_body() -> None:
 def test_failed_vote_is_logged(caplog: pytest.LogCaptureFixture) -> None:
     coordinator = _coordinator_for("127.0.0.1:9", replication_factor=1)
 
-    async def down(node: str, key: str, value: bytes) -> cache_pb2.PutResponse:
+    async def down(
+        node: str, key: str, value: bytes, version: HLC, expires_at: float
+    ) -> cache_pb2.PutResponse:
         raise RuntimeError("unreachable")
 
     coordinator.grpc_put = down  # type: ignore[method-assign]
