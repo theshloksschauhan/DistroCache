@@ -12,6 +12,11 @@ HIT_COUNT = Counter(
     "Total number of cache hits",
     ["operation"],
 )
+MISS_COUNT = Counter(
+    "distrocache_misses_total",
+    "Reads that found no value on any responding replica (a 404)",
+    ["operation"],
+)
 LATENCY = Histogram(
     "distrocache_request_latency_seconds",
     "Request latency in seconds",

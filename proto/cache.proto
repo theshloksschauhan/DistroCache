@@ -26,6 +26,8 @@ message GetResponse {
   bool found = 1;
   bytes value = 2;
   string error = 3;
+  Version version = 4;
+  double expires_at = 5;
 }
 
 message PutRequest {

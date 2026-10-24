@@ -63,20 +63,21 @@ class Storage:
                 self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
                 self._conn.commit()
 
-    async def get(self, key: str) -> bytes | None:
+    async def get(self, key: str) -> tuple[bytes, float | None, Version] | None:
+        """Read for a client GET: returns (value, expires_at, version) and bumps last_access."""
         return await asyncio.to_thread(self._get_sync, key)
 
-    def _get_sync(self, key: str) -> bytes | None:
+    def _get_sync(self, key: str) -> tuple[bytes, float | None, Version] | None:
         now = time.time()
         with self._lock:
-            cursor = self._conn.execute(
-                "SELECT value, expires_at FROM cache_entries WHERE key = ?",
+            row = self._conn.execute(
+                "SELECT value, expires_at, version_ms, version_logical, version_coordinator "
+                "FROM cache_entries WHERE key = ?",
                 (key,),
-            )
-            row = cursor.fetchone()
+            ).fetchone()
             if not row:
                 return None
-            value, expires_at = row
+            value, expires_at, v_ms, v_logical, v_coord = row
             if expires_at is not None and now >= expires_at:
                 self._conn.execute("DELETE FROM cache_entries WHERE key = ?", (key,))
                 self._conn.commit()
@@ -86,7 +87,7 @@ class Storage:
                 (now, key),
             )
             self._conn.commit()
-            return value
+            return value, expires_at, (int(v_ms), int(v_logical), str(v_coord))
 
     async def get_entry(self, key: str) -> tuple[bytes, float | None, Version] | None:
         return await asyncio.to_thread(self._get_entry_sync, key)

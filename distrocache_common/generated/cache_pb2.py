@@ -14,47 +14,47 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0b\x63\x61\x63he.proto\x12\x05\x63\x61\x63he\"G\n\x07Version\x12\x13\n\x0bphysical_ms\x18\x01 \x01(\x03\x12\x0f\n\x07logical\x18\x02 \x01(\x03\x12\x16\n\x0e\x63oordinator_id\x18\x03 \x01(\t\"\x19\n\nGetRequest\x12\x0b\n\x03key\x18\x01 \x01(\t\":\n\x0bGetResponse\x12\r\n\x05\x66ound\x18\x01 \x01(\x08\x12\r\n\x05value\x18\x02 \x01(\x0c\x12\r\n\x05\x65rror\x18\x03 \x01(\t\"]\n\nPutRequest\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x0c\x12\x1f\n\x07version\x18\x03 \x01(\x0b\x32\x0e.cache.Version\x12\x12\n\nexpires_at\x18\x04 \x01(\x01\"@\n\x0bPutResponse\x12\"\n\x06status\x18\x01 \x01(\x0e\x32\x12.cache.WriteStatus\x12\r\n\x05\x65rror\x18\x02 \x01(\t\"Q\n\rDeleteRequest\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\x1f\n\x07version\x18\x02 \x01(\x0b\x32\x0e.cache.Version\x12\x12\n\nexpires_at\x18\x03 \x01(\x01\"C\n\x0e\x44\x65leteResponse\x12\"\n\x06status\x18\x01 \x01(\x0e\x32\x12.cache.WriteStatus\x12\r\n\x05\x65rror\x18\x02 \x01(\t\"X\n\x05\x45ntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x0c\x12\x12\n\nexpires_at\x18\x03 \x01(\x01\x12\x1f\n\x07version\x18\x04 \x01(\x0b\x32\x0e.cache.Version\",\n\x12ListEntriesRequest\x12\x16\n\x0einclude_values\x18\x01 \x01(\x08\"4\n\x13ListEntriesResponse\x12\x1d\n\x07\x65ntries\x18\x01 \x03(\x0b\x32\x0c.cache.Entry\"\x1e\n\x0fGetEntryRequest\x12\x0b\n\x03key\x18\x01 \x01(\t\"M\n\x10GetEntryResponse\x12\r\n\x05\x66ound\x18\x01 \x01(\x08\x12\x1b\n\x05\x65ntry\x18\x02 \x01(\x0b\x32\x0c.cache.Entry\x12\r\n\x05\x65rror\x18\x03 \x01(\t\"d\n\x11PutReplicaRequest\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x0c\x12\x12\n\nexpires_at\x18\x03 \x01(\x01\x12\x1f\n\x07version\x18\x04 \x01(\x0b\x32\x0e.cache.Version\"G\n\x12PutReplicaResponse\x12\"\n\x06status\x18\x01 \x01(\x0e\x32\x12.cache.WriteStatus\x12\r\n\x05\x65rror\x18\x02 \x01(\t\"\x0f\n\rHealthRequest\"-\n\x0eHealthResponse\x12\x0f\n\x07node_id\x18\x01 \x01(\t\x12\n\n\x02ok\x18\x02 \x01(\x08*X\n\x0bWriteStatus\x12\x1c\n\x18WRITE_STATUS_UNSPECIFIED\x10\x00\x12\x0b\n\x07\x41PPLIED\x10\x01\x12\x13\n\x0f\x41LREADY_CURRENT\x10\x02\x12\t\n\x05\x45RROR\x10\x03\x32\x9b\x03\n\tCacheNode\x12,\n\x03Get\x12\x11.cache.GetRequest\x1a\x12.cache.GetResponse\x12,\n\x03Put\x12\x11.cache.PutRequest\x1a\x12.cache.PutResponse\x12\x35\n\x06\x44\x65lete\x12\x14.cache.DeleteRequest\x1a\x15.cache.DeleteResponse\x12\x44\n\x0bListEntries\x12\x19.cache.ListEntriesRequest\x1a\x1a.cache.ListEntriesResponse\x12;\n\x08GetEntry\x12\x16.cache.GetEntryRequest\x1a\x17.cache.GetEntryResponse\x12\x41\n\nPutReplica\x12\x18.cache.PutReplicaRequest\x1a\x19.cache.PutReplicaResponse\x12\x35\n\x06Health\x12\x14.cache.HealthRequest\x1a\x15.cache.HealthResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0b\x63\x61\x63he.proto\x12\x05\x63\x61\x63he\"G\n\x07Version\x12\x13\n\x0bphysical_ms\x18\x01 \x01(\x03\x12\x0f\n\x07logical\x18\x02 \x01(\x03\x12\x16\n\x0e\x63oordinator_id\x18\x03 \x01(\t\"\x19\n\nGetRequest\x12\x0b\n\x03key\x18\x01 \x01(\t\"o\n\x0bGetResponse\x12\r\n\x05\x66ound\x18\x01 \x01(\x08\x12\r\n\x05value\x18\x02 \x01(\x0c\x12\r\n\x05\x65rror\x18\x03 \x01(\t\x12\x1f\n\x07version\x18\x04 \x01(\x0b\x32\x0e.cache.Version\x12\x12\n\nexpires_at\x18\x05 \x01(\x01\"]\n\nPutRequest\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x0c\x12\x1f\n\x07version\x18\x03 \x01(\x0b\x32\x0e.cache.Version\x12\x12\n\nexpires_at\x18\x04 \x01(\x01\"@\n\x0bPutResponse\x12\"\n\x06status\x18\x01 \x01(\x0e\x32\x12.cache.WriteStatus\x12\r\n\x05\x65rror\x18\x02 \x01(\t\"Q\n\rDeleteRequest\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\x1f\n\x07version\x18\x02 \x01(\x0b\x32\x0e.cache.Version\x12\x12\n\nexpires_at\x18\x03 \x01(\x01\"C\n\x0e\x44\x65leteResponse\x12\"\n\x06status\x18\x01 \x01(\x0e\x32\x12.cache.WriteStatus\x12\r\n\x05\x65rror\x18\x02 \x01(\t\"X\n\x05\x45ntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x0c\x12\x12\n\nexpires_at\x18\x03 \x01(\x01\x12\x1f\n\x07version\x18\x04 \x01(\x0b\x32\x0e.cache.Version\",\n\x12ListEntriesRequest\x12\x16\n\x0einclude_values\x18\x01 \x01(\x08\"4\n\x13ListEntriesResponse\x12\x1d\n\x07\x65ntries\x18\x01 \x03(\x0b\x32\x0c.cache.Entry\"\x1e\n\x0fGetEntryRequest\x12\x0b\n\x03key\x18\x01 \x01(\t\"M\n\x10GetEntryResponse\x12\r\n\x05\x66ound\x18\x01 \x01(\x08\x12\x1b\n\x05\x65ntry\x18\x02 \x01(\x0b\x32\x0c.cache.Entry\x12\r\n\x05\x65rror\x18\x03 \x01(\t\"d\n\x11PutReplicaRequest\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x0c\x12\x12\n\nexpires_at\x18\x03 \x01(\x01\x12\x1f\n\x07version\x18\x04 \x01(\x0b\x32\x0e.cache.Version\"G\n\x12PutReplicaResponse\x12\"\n\x06status\x18\x01 \x01(\x0e\x32\x12.cache.WriteStatus\x12\r\n\x05\x65rror\x18\x02 \x01(\t\"\x0f\n\rHealthRequest\"-\n\x0eHealthResponse\x12\x0f\n\x07node_id\x18\x01 \x01(\t\x12\n\n\x02ok\x18\x02 \x01(\x08*X\n\x0bWriteStatus\x12\x1c\n\x18WRITE_STATUS_UNSPECIFIED\x10\x00\x12\x0b\n\x07\x41PPLIED\x10\x01\x12\x13\n\x0f\x41LREADY_CURRENT\x10\x02\x12\t\n\x05\x45RROR\x10\x03\x32\x9b\x03\n\tCacheNode\x12,\n\x03Get\x12\x11.cache.GetRequest\x1a\x12.cache.GetResponse\x12,\n\x03Put\x12\x11.cache.PutRequest\x1a\x12.cache.PutResponse\x12\x35\n\x06\x44\x65lete\x12\x14.cache.DeleteRequest\x1a\x15.cache.DeleteResponse\x12\x44\n\x0bListEntries\x12\x19.cache.ListEntriesRequest\x1a\x1a.cache.ListEntriesResponse\x12;\n\x08GetEntry\x12\x16.cache.GetEntryRequest\x1a\x17.cache.GetEntryResponse\x12\x41\n\nPutReplica\x12\x18.cache.PutReplicaRequest\x1a\x19.cache.PutReplicaResponse\x12\x35\n\x06Health\x12\x14.cache.HealthRequest\x1a\x15.cache.HealthResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'cache_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_WRITESTATUS']._serialized_start=1035
-  _globals['_WRITESTATUS']._serialized_end=1123
+  _globals['_WRITESTATUS']._serialized_start=1088
+  _globals['_WRITESTATUS']._serialized_end=1176
   _globals['_VERSION']._serialized_start=22
   _globals['_VERSION']._serialized_end=93
   _globals['_GETREQUEST']._serialized_start=95
   _globals['_GETREQUEST']._serialized_end=120
   _globals['_GETRESPONSE']._serialized_start=122
-  _globals['_GETRESPONSE']._serialized_end=180
-  _globals['_PUTREQUEST']._serialized_start=182
-  _globals['_PUTREQUEST']._serialized_end=275
-  _globals['_PUTRESPONSE']._serialized_start=277
-  _globals['_PUTRESPONSE']._serialized_end=341
-  _globals['_DELETEREQUEST']._serialized_start=343
-  _globals['_DELETEREQUEST']._serialized_end=424
-  _globals['_DELETERESPONSE']._serialized_start=426
-  _globals['_DELETERESPONSE']._serialized_end=493
-  _globals['_ENTRY']._serialized_start=495
-  _globals['_ENTRY']._serialized_end=583
-  _globals['_LISTENTRIESREQUEST']._serialized_start=585
-  _globals['_LISTENTRIESREQUEST']._serialized_end=629
-  _globals['_LISTENTRIESRESPONSE']._serialized_start=631
-  _globals['_LISTENTRIESRESPONSE']._serialized_end=683
-  _globals['_GETENTRYREQUEST']._serialized_start=685
-  _globals['_GETENTRYREQUEST']._serialized_end=715
-  _globals['_GETENTRYRESPONSE']._serialized_start=717
-  _globals['_GETENTRYRESPONSE']._serialized_end=794
-  _globals['_PUTREPLICAREQUEST']._serialized_start=796
-  _globals['_PUTREPLICAREQUEST']._serialized_end=896
-  _globals['_PUTREPLICARESPONSE']._serialized_start=898
-  _globals['_PUTREPLICARESPONSE']._serialized_end=969
-  _globals['_HEALTHREQUEST']._serialized_start=971
-  _globals['_HEALTHREQUEST']._serialized_end=986
-  _globals['_HEALTHRESPONSE']._serialized_start=988
-  _globals['_HEALTHRESPONSE']._serialized_end=1033
-  _globals['_CACHENODE']._serialized_start=1126
-  _globals['_CACHENODE']._serialized_end=1537
+  _globals['_GETRESPONSE']._serialized_end=233
+  _globals['_PUTREQUEST']._serialized_start=235
+  _globals['_PUTREQUEST']._serialized_end=328
+  _globals['_PUTRESPONSE']._serialized_start=330
+  _globals['_PUTRESPONSE']._serialized_end=394
+  _globals['_DELETEREQUEST']._serialized_start=396
+  _globals['_DELETEREQUEST']._serialized_end=477
+  _globals['_DELETERESPONSE']._serialized_start=479
+  _globals['_DELETERESPONSE']._serialized_end=546
+  _globals['_ENTRY']._serialized_start=548
+  _globals['_ENTRY']._serialized_end=636
+  _globals['_LISTENTRIESREQUEST']._serialized_start=638
+  _globals['_LISTENTRIESREQUEST']._serialized_end=682
+  _globals['_LISTENTRIESRESPONSE']._serialized_start=684
+  _globals['_LISTENTRIESRESPONSE']._serialized_end=736
+  _globals['_GETENTRYREQUEST']._serialized_start=738
+  _globals['_GETENTRYREQUEST']._serialized_end=768
+  _globals['_GETENTRYRESPONSE']._serialized_start=770
+  _globals['_GETENTRYRESPONSE']._serialized_end=847
+  _globals['_PUTREPLICAREQUEST']._serialized_start=849
+  _globals['_PUTREPLICAREQUEST']._serialized_end=949
+  _globals['_PUTREPLICARESPONSE']._serialized_start=951
+  _globals['_PUTREPLICARESPONSE']._serialized_end=1022
+  _globals['_HEALTHREQUEST']._serialized_start=1024
+  _globals['_HEALTHREQUEST']._serialized_end=1039
+  _globals['_HEALTHRESPONSE']._serialized_start=1041
+  _globals['_HEALTHRESPONSE']._serialized_end=1086
+  _globals['_CACHENODE']._serialized_start=1179
+  _globals['_CACHENODE']._serialized_end=1590
 # @@protoc_insertion_point(module_scope)

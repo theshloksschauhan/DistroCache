@@ -83,12 +83,21 @@ def _failures(operation: str, reason: str | None = None) -> float:
     return parse_metric(generate_latest().decode(), "distrocache_request_failures_total", **labels)
 
 
-def _coordinator_for(*addresses: str, replication_factor: int = 3) -> Coordinator:
-    # No lifespan here, so the health loop never dials these addresses.
+def _coordinator_for(
+    *addresses: str,
+    replication_factor: int = 3,
+    read_quorum: int | None = None,
+    write_quorum: int | None = None,
+) -> Coordinator:
+    # No lifespan here, so the health loop never dials these addresses. R/W default to a valid
+    # quorum for the given N (so a single-replica test is not rejected by the N/R/W validation).
+    default_quorum = min(2, replication_factor)
     app = create_app(
         Settings(
             node_addresses=list(addresses),
             replication_factor=replication_factor,
+            read_quorum=read_quorum if read_quorum is not None else default_quorum,
+            write_quorum=write_quorum if write_quorum is not None else default_quorum,
             retry_attempts=2,
             retry_backoff=0,
         )
@@ -128,22 +137,28 @@ def test_permanent_errors_are_not_retried(method: str) -> None:
     assert stub.calls == 1, f"{method} retried a permanent INTERNAL error ({stub.calls} calls)"
 
 
-def test_get_uses_the_next_replica_when_the_first_errors() -> None:
-    coordinator = _coordinator_for("127.0.0.1:1", "127.0.0.1:2", replication_factor=2)
+def test_get_still_returns_a_value_when_one_replica_errors() -> None:
+    # R=1: one failed replica plus one that holds the key still satisfies the read quorum.
+    coordinator = _coordinator_for(
+        "127.0.0.1:1", "127.0.0.1:2", replication_factor=2, read_quorum=1
+    )
     calls: list[str] = []
 
     async def fake_get(node: str, key: str) -> cache_pb2.GetResponse:
         calls.append(node)
-        if len(calls) == 1:
+        if node == "127.0.0.1:1":
             raise StatusError(grpc.StatusCode.UNAVAILABLE, "connection refused")
-        return cache_pb2.GetResponse(found=True, value=b"v1")
+        return cache_pb2.GetResponse(
+            found=True, value=b"v1", version=cache_pb2.Version(physical_ms=1)
+        )
 
     coordinator.grpc_get = fake_get  # type: ignore[method-assign]
     status, body = _invoke(get_key("k", coordinator))
 
     assert status == 200, body
     assert body["value"] == "v1"
-    assert len(calls) == 2
+    # Fan-out is parallel, so both replicas are contacted.
+    assert sorted(calls) == ["127.0.0.1:1", "127.0.0.1:2"]
 
 
 def test_no_acks_is_503_and_counts_one_unavailable_failure() -> None:
@@ -159,7 +174,7 @@ def test_no_acks_is_503_and_counts_one_unavailable_failure() -> None:
 
     assert status == 503, body
     assert body.get("acks") == 0
-    assert body.get("required") == 1
+    assert body.get("required") == 2  # default R for N=3
     errors = body.get("errors")
     assert isinstance(errors, list) and len(errors) == 3
     assert after == before + 1
@@ -246,7 +261,7 @@ def test_no_nodes_is_503_with_the_vote_body() -> None:
 
     assert status == 503, body
     assert body.get("acks") == 0
-    assert body.get("required") == 1
+    assert body.get("required") == 2  # default W for N=3
     assert body.get("errors") == []
     assert _failures("put", reason="unavailable") == before + 1
 

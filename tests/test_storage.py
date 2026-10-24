@@ -4,7 +4,11 @@ import threading
 from pathlib import Path
 from types import TracebackType
 
-from node.storage import SCHEMA_VERSION, Storage
+from node.storage import SCHEMA_VERSION, Storage, Version
+
+
+def _value(entry: tuple[bytes, float | None, Version] | None) -> bytes | None:
+    return None if entry is None else entry[0]
 
 
 class RecordingLock:
@@ -48,10 +52,10 @@ def test_upsert_is_last_writer_wins(tmp_path: Path) -> None:
     assert asyncio.run(storage.upsert("k", b"old", None, (1, 0, "c"))) is True
     # An older version is rejected and does not change the stored value.
     assert asyncio.run(storage.upsert("k", b"stale", None, (0, 9, "c"))) is False
-    assert asyncio.run(storage.get("k")) == b"old"
+    assert _value(asyncio.run(storage.get("k"))) == b"old"
     # A newer version wins.
     assert asyncio.run(storage.upsert("k", b"new", None, (2, 0, "c"))) is True
-    assert asyncio.run(storage.get("k")) == b"new"
+    assert _value(asyncio.run(storage.get("k"))) == b"new"
 
     storage.close()
 

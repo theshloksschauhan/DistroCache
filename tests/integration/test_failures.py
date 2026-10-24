@@ -46,7 +46,7 @@ def test_failed_get_is_counted(cluster_factory: ClusterFactory) -> None:
     assert response.status_code == 503, response.text
     body = response.json()
     assert body["acks"] == 0
-    assert body["required"] == 1
+    assert body["required"] == 2  # default read quorum R for N=3
     assert len(body["errors"]) == 3
     after = cluster.metric(
         "distrocache_request_failures_total", operation="get", reason="unavailable"
