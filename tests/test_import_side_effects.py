@@ -3,16 +3,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="node/app.py opens its SQLite database at import time (fixed in Stage 1)",
-)
 def test_importing_apps_creates_no_files(tmp_path: Path) -> None:
     env = {k: v for k, v in os.environ.items() if k != "STORAGE_PATH"}
     env["PYTHONPATH"] = str(REPO_ROOT)

@@ -21,6 +21,10 @@ class Storage:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
 
+    def close(self) -> None:
+        with self._lock:
+            self._conn.close()
+
     async def initialize(self) -> None:
         await asyncio.to_thread(self._initialize_sync)
 
