@@ -63,16 +63,9 @@ npm run dev
 pytest
 ```
 
-## Vercel deployment
-- Frontend: deploy the `frontend` directory as a Vite app.
-- API: deploy using the serverless function in `api/index.py` with `vercel.json`.
+## Configuration
 
-Suggested flow:
-1) Create a Vercel project for the API (root directory = repo root) and deploy.
-2) Create a Vercel project for the frontend (root directory = `frontend`) and deploy.
-3) Set `VITE_API_URL` in the frontend project to the deployed API URL.
-
-Recommended API env vars:
+API env vars:
 - `NODE_ADDRESSES` to a comma-separated list of reachable gRPC nodes.
 - `REPLICATION_FACTOR` to the desired replication count.
 - `HEALTH_INTERVAL` for cluster polling interval.
@@ -93,7 +86,6 @@ Node env vars:
 - `TTL_SECONDS` to expire keys (0 disables TTL).
 - `MAX_ITEMS` to cap SQLite entries (0 disables LRU eviction).
 
-Notes:
-- The API uses gRPC to talk to cache nodes, so you still need the gRPC nodes running elsewhere (e.g., Docker or a VM).
-- Vercel serverless does not support WebSockets. The dashboard automatically falls back to polling `/health`.
+Frontend:
+- `VITE_API_URL` to the API base URL (build-time).
 # DistroCache
