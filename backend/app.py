@@ -45,9 +45,11 @@ CORS_ORIGINS_RAW = os.getenv(
     "CORS_ORIGINS",
     "http://localhost:3000,http://localhost:5173",
 )
-CORS_ORIGINS = ["*"] if CORS_ORIGINS_RAW.strip() == "*" else [
-    origin.strip() for origin in CORS_ORIGINS_RAW.split(",") if origin.strip()
-]
+CORS_ORIGINS = (
+    ["*"]
+    if CORS_ORIGINS_RAW.strip() == "*"
+    else [origin.strip() for origin in CORS_ORIGINS_RAW.split(",") if origin.strip()]
+)
 
 clients = GrpcClientPool()
 ws_manager = WebSocketManager()
@@ -99,7 +101,9 @@ async def refresh_health() -> None:
             }
             NODE_STATUS.labels(node=node).set(1 if ok else 0)
         ACTIVE_NODES.set(len(nodes))
-        await ws_manager.broadcast({"type": "cluster", "nodes": cluster_state, "rebalances": recent_rebalances[-10:]})
+        await ws_manager.broadcast(
+            {"type": "cluster", "nodes": cluster_state, "rebalances": recent_rebalances[-10:]}
+        )
         await asyncio.sleep(HEALTH_INTERVAL)
 
 
@@ -230,7 +234,9 @@ async def _grpc_put(node: str, key: str, value: bytes) -> cache_pb2.PutResponse:
     last_exc: Exception | None = None
     for attempt in range(RETRY_ATTEMPTS):
         try:
-            return await stub.Put(cache_pb2.PutRequest(key=key, value=value), timeout=REQUEST_TIMEOUT)
+            return await stub.Put(
+                cache_pb2.PutRequest(key=key, value=value), timeout=REQUEST_TIMEOUT
+            )
         except Exception as exc:
             last_exc = exc
             if attempt < RETRY_ATTEMPTS - 1:

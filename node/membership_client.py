@@ -34,7 +34,9 @@ class MembershipClient:
         response = await self._client.post(f"{self._base_url}/membership/deregister", json=payload)
         response.raise_for_status()
 
-    async def report_rebalance(self, duration_s: float, keys_moved: int, replicas_restored: int) -> None:
+    async def report_rebalance(
+        self, duration_s: float, keys_moved: int, replicas_restored: int
+    ) -> None:
         payload = {
             "node_id": self._node_id,
             "duration_s": duration_s,
@@ -42,7 +44,9 @@ class MembershipClient:
             "replicas_restored": replicas_restored,
         }
         try:
-            response = await self._client.post(f"{self._base_url}/membership/rebalance", json=payload)
+            response = await self._client.post(
+                f"{self._base_url}/membership/rebalance", json=payload
+            )
             response.raise_for_status()
         except Exception as exc:
             logger.warning("rebalance report failed: %s", exc)
