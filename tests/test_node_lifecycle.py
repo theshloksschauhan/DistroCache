@@ -15,6 +15,7 @@ def _config(tmp_path: Path) -> NodeConfig:
     port = _free_port()
     return NodeConfig(
         node_id="node-test",
+        grpc_host="127.0.0.1",
         grpc_port=port,
         node_address=f"127.0.0.1:{port}",
         # Nothing listens here, so register/heartbeat fail fast and are only logged.

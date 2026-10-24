@@ -25,6 +25,7 @@ logger = logging.getLogger("distrocache.node")
 @dataclass(frozen=True)
 class NodeConfig:
     node_id: str
+    grpc_host: str
     grpc_port: int
     node_address: str
     backend_url: str
@@ -41,6 +42,8 @@ def load_config() -> NodeConfig:
     grpc_port = int(os.getenv("GRPC_PORT", "50051"))
     return NodeConfig(
         node_id=node_id,
+        # Containers need 0.0.0.0; local runs and tests can bind 127.0.0.1 only.
+        grpc_host=os.getenv("GRPC_HOST", "0.0.0.0"),
         grpc_port=grpc_port,
         node_address=os.getenv("NODE_ADDRESS", f"{node_id}:{grpc_port}"),
         backend_url=os.getenv("BACKEND_URL", "http://localhost:8000"),
@@ -175,9 +178,14 @@ class Node:
         cache_pb2_grpc.add_CacheNodeServicer_to_server(
             CacheNodeService(self.storage, self.config.node_id), server
         )
-        server.add_insecure_port(f"0.0.0.0:{self.config.grpc_port}")
+        server.add_insecure_port(f"{self.config.grpc_host}:{self.config.grpc_port}")
         await server.start()
-        logger.info("node %s listening on %s", self.config.node_id, self.config.grpc_port)
+        logger.info(
+            "node %s listening on %s:%s",
+            self.config.node_id,
+            self.config.grpc_host,
+            self.config.grpc_port,
+        )
         try:
             await self._register()
             self._spawn(self._heartbeat_loop())

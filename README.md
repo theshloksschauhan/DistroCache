@@ -121,6 +121,7 @@ API env vars:
 Node env vars:
 - `BACKEND_URL` to the API base URL for membership heartbeats.
 - `NODE_ADDRESS` to the gRPC address other nodes should use (defaults to `NODE_ID:GRPC_PORT`).
+- `GRPC_HOST` interface the gRPC server binds to (default `0.0.0.0`; use `127.0.0.1` for local-only).
 - `HEARTBEAT_INTERVAL` for node heartbeat frequency in seconds.
 - `REPLICATION_FACTOR` to align with the API replication factor.
 - `GRPC_TIMEOUT` gRPC timeout for replica transfers.
