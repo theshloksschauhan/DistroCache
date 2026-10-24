@@ -5,6 +5,7 @@ description = "Distributed key-value cache: FastAPI coordinator, gRPC storage no
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Shlok Shoorveer Singh Chauhan" }]
 
 [tool.pytest.ini_options]
