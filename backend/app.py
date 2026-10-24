@@ -4,6 +4,8 @@ import asyncio
 import logging
 import os
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Response, WebSocket
@@ -57,7 +59,16 @@ recent_rebalances: list[dict[str, Any]] = []
 
 cluster_state: dict[str, dict[str, Any]] = {}
 
-app = FastAPI(title="DistroCache API")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    asyncio.create_task(refresh_health())
+    asyncio.create_task(prune_membership())
+    yield
+    await clients.close()
+
+
+app = FastAPI(title="DistroCache API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
@@ -97,17 +108,6 @@ async def prune_membership() -> None:
         nodes = await registry.prune_expired()
         ACTIVE_NODES.set(len([node for node in nodes if node.status == "up"]))
         await asyncio.sleep(HEARTBEAT_INTERVAL)
-
-
-@app.on_event("startup")
-async def on_startup() -> None:
-    asyncio.create_task(refresh_health())
-    asyncio.create_task(prune_membership())
-
-
-@app.on_event("shutdown")
-async def on_shutdown() -> None:
-    await clients.close()
 
 
 @app.get("/health")
