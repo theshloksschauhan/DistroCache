@@ -15,12 +15,6 @@ from backend.app import Coordinator, Settings, create_app, get_key, put_key
 from distrocache_common.generated import cache_pb2
 from tests.integration.harness import parse_metric
 
-pytestmark_xfail = pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="Stage 2: replica errors abort the request or get retried unconditionally",
-)
-
 
 class StatusError(Exception):
     """Same surface as grpc.aio.AioRpcError: code() and details()."""
@@ -114,7 +108,6 @@ def _invoke(coro: object) -> tuple[int, dict[str, object]]:
 
 
 @pytest.mark.parametrize("method", ["grpc_get", "grpc_put"])
-@pytestmark_xfail
 def test_permanent_errors_are_not_retried(method: str) -> None:
     # Two errors so a retry would also fail. The assertion is that there is no retry.
     stub = ScriptedStub([StatusError(grpc.StatusCode.INTERNAL)] * 2)
@@ -129,7 +122,6 @@ def test_permanent_errors_are_not_retried(method: str) -> None:
     assert stub.calls == 1, f"{method} retried a permanent INTERNAL error ({stub.calls} calls)"
 
 
-@pytestmark_xfail
 def test_get_uses_the_next_replica_when_the_first_errors() -> None:
     coordinator = _coordinator_for("127.0.0.1:1", "127.0.0.1:2", replication_factor=2)
     calls: list[str] = []
@@ -148,7 +140,6 @@ def test_get_uses_the_next_replica_when_the_first_errors() -> None:
     assert len(calls) == 2
 
 
-@pytestmark_xfail
 def test_no_acks_is_503_and_counts_one_unavailable_failure() -> None:
     coordinator = _coordinator_for("127.0.0.1:1", "127.0.0.1:2", "127.0.0.1:3")
 
@@ -168,7 +159,6 @@ def test_no_acks_is_503_and_counts_one_unavailable_failure() -> None:
     assert after == before + 1
 
 
-@pytestmark_xfail
 def test_get_miss_does_not_count_as_a_request_failure() -> None:
     coordinator = _coordinator_for("127.0.0.1:1", replication_factor=1)
 
@@ -184,7 +174,6 @@ def test_get_miss_does_not_count_as_a_request_failure() -> None:
     assert after == before, "a GET miss incremented distrocache_request_failures_total"
 
 
-@pytestmark_xfail
 def test_rejected_write_is_a_failed_vote() -> None:
     coordinator = _coordinator_for("127.0.0.1:9", replication_factor=1)
 
@@ -198,3 +187,55 @@ def test_rejected_write_is_a_failed_vote() -> None:
     assert body.get("acks") == 0
     assert body.get("required") == 1
     assert body.get("errors") == [{"node": "127.0.0.1:9", "error": "disk full"}]
+
+
+@pytest.mark.parametrize("status", [grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED])
+@pytest.mark.parametrize("method", ["grpc_get", "grpc_put"])
+def test_transient_errors_are_retried(method: str, status: grpc.StatusCode) -> None:
+    # One failure then success: both attempts happen, including for writes.
+    stub = ScriptedStub([StatusError(status, "try again")])
+    coordinator = _coordinator()
+    coordinator.clients = StubPool(stub)  # type: ignore[assignment]
+    call = getattr(coordinator, method)
+    args = ("127.0.0.1:1", "k", b"v") if method == "grpc_put" else ("127.0.0.1:1", "k")
+
+    asyncio.run(call(*args))
+
+    assert stub.calls == 2
+
+
+def test_retries_stop_at_the_attempt_limit() -> None:
+    stub = ScriptedStub([StatusError(grpc.StatusCode.UNAVAILABLE)] * 5)
+    coordinator = _coordinator()
+    coordinator.clients = StubPool(stub)  # type: ignore[assignment]
+
+    with pytest.raises(StatusError):
+        asyncio.run(coordinator.grpc_put("127.0.0.1:1", "k", b"v"))
+
+    assert stub.calls == 2
+
+
+def test_corrupt_value_counts_as_an_internal_failure() -> None:
+    coordinator = _coordinator_for("127.0.0.1:1", replication_factor=1)
+
+    async def corrupt(node: str, key: str) -> cache_pb2.GetResponse:
+        return cache_pb2.GetResponse(found=True, value=b"\xff")
+
+    coordinator.grpc_get = corrupt  # type: ignore[method-assign]
+    before = _failures("get", reason="internal")
+    status, body = _invoke(get_key("k", coordinator))
+
+    assert status == 500, body
+    assert _failures("get", reason="internal") == before + 1
+
+
+def test_no_nodes_is_503_with_the_vote_body() -> None:
+    coordinator = _coordinator_for()
+    before = _failures("put", reason="unavailable")
+    status, body = _invoke(put_key("k", {"value": "v"}, coordinator))
+
+    assert status == 503, body
+    assert body.get("acks") == 0
+    assert body.get("required") == 1
+    assert body.get("errors") == []
+    assert _failures("put", reason="unavailable") == before + 1

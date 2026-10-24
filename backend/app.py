@@ -4,18 +4,20 @@ import asyncio
 import logging
 import os
 import time
-from collections.abc import AsyncIterator, Coroutine
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Annotated, Any
 
+import grpc
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Response, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from prometheus_client import generate_latest
 from starlette.requests import HTTPConnection
 
 from distrocache_common.generated import cache_pb2
-from distrocache_common.grpc_client import GrpcClientPool
+from distrocache_common.grpc_client import GrpcClientPool, rpc_error_text
 from distrocache_common.hashing import ConsistentHashRing
 
 from .membership import MembershipRegistry
@@ -36,6 +38,29 @@ from .metrics import (
 from .websocket_manager import WebSocketManager
 
 logger = logging.getLogger("distrocache.api")
+
+# One answering replica is enough. Stage 4 replaces this with R and W.
+_REQUIRED_ACKS = 1
+
+
+def _retryable(exc: BaseException) -> bool:
+    """True only for statuses that mean 'the call may work if sent again'."""
+    code = getattr(exc, "code", None)
+    if not callable(code):
+        return False
+    try:
+        status = code()
+    except Exception:
+        return False
+    return status in (grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED)
+
+
+def _unavailable(operation: str, acks: int, errors: list[dict[str, str]]) -> JSONResponse:
+    REQUEST_FAILURES.labels(operation=operation, reason="unavailable").inc()
+    return JSONResponse(
+        status_code=503,
+        content={"acks": acks, "required": _REQUIRED_ACKS, "errors": errors},
+    )
 
 
 @dataclass(frozen=True)
@@ -140,48 +165,32 @@ class Coordinator:
             ACTIVE_NODES.set(len([node for node in nodes if node.status == "up"]))
             await asyncio.sleep(self.settings.heartbeat_interval)
 
-    async def grpc_get(self, node: str, key: str) -> cache_pb2.GetResponse:
+    async def _rpc(self, node: str, method: str, request: Any) -> Any:
+        """One replica call. Retry only when another try could succeed.
+
+        UNAVAILABLE and DEADLINE_EXCEEDED are retried for reads and writes. A timed-out
+        write may already be applied; the retry sends it again. Stage 3 makes that safe
+        by reusing one version and treating ALREADY_CURRENT as an ack.
+        """
         stub = await self.clients.get_stub(node)
-        last_exc: Exception | None = None
         for attempt in range(self.settings.retry_attempts):
             try:
-                return await stub.Get(
-                    cache_pb2.GetRequest(key=key), timeout=self.settings.request_timeout
-                )
+                return await getattr(stub, method)(request, timeout=self.settings.request_timeout)
             except Exception as exc:
-                last_exc = exc
-                if attempt < self.settings.retry_attempts - 1:
-                    await asyncio.sleep(self.settings.retry_backoff * (2**attempt))
-        raise last_exc or RuntimeError("gRPC get failed")
+                retrying = attempt + 1 < self.settings.retry_attempts and _retryable(exc)
+                if not retrying:
+                    raise
+                await asyncio.sleep(self.settings.retry_backoff * (2**attempt))
+        raise RuntimeError("gRPC call failed")
+
+    async def grpc_get(self, node: str, key: str) -> cache_pb2.GetResponse:
+        return await self._rpc(node, "Get", cache_pb2.GetRequest(key=key))
 
     async def grpc_put(self, node: str, key: str, value: bytes) -> cache_pb2.PutResponse:
-        stub = await self.clients.get_stub(node)
-        last_exc: Exception | None = None
-        for attempt in range(self.settings.retry_attempts):
-            try:
-                return await stub.Put(
-                    cache_pb2.PutRequest(key=key, value=value),
-                    timeout=self.settings.request_timeout,
-                )
-            except Exception as exc:
-                last_exc = exc
-                if attempt < self.settings.retry_attempts - 1:
-                    await asyncio.sleep(self.settings.retry_backoff * (2**attempt))
-        raise last_exc or RuntimeError("gRPC put failed")
+        return await self._rpc(node, "Put", cache_pb2.PutRequest(key=key, value=value))
 
     async def grpc_delete(self, node: str, key: str) -> cache_pb2.DeleteResponse:
-        stub = await self.clients.get_stub(node)
-        last_exc: Exception | None = None
-        for attempt in range(self.settings.retry_attempts):
-            try:
-                return await stub.Delete(
-                    cache_pb2.DeleteRequest(key=key), timeout=self.settings.request_timeout
-                )
-            except Exception as exc:
-                last_exc = exc
-                if attempt < self.settings.retry_attempts - 1:
-                    await asyncio.sleep(self.settings.retry_backoff * (2**attempt))
-        raise last_exc or RuntimeError("gRPC delete failed")
+        return await self._rpc(node, "Delete", cache_pb2.DeleteRequest(key=key))
 
     async def replicas_for(self, key: str) -> list[str]:
         nodes = await self.registry.live_addresses()
@@ -300,71 +309,97 @@ async def cluster_ws(websocket: WebSocket, c: CoordinatorDep) -> None:
         c.ws_manager.disconnect(websocket)
 
 
-@router.get("/kv/{key}")
-async def get_key(key: str, c: CoordinatorDep) -> dict[str, Any]:
+def _no_nodes(operation: str) -> JSONResponse:
+    return _unavailable(operation, acks=0, errors=[])
+
+
+@router.get("/kv/{key}", response_model=None)
+async def get_key(key: str, c: CoordinatorDep) -> dict[str, Any] | JSONResponse:
     REQUEST_COUNT.labels(operation="get").inc()
     nodes = await c.replicas_for(key)
     if not nodes:
-        raise HTTPException(status_code=503, detail="No cache nodes available")
+        return _no_nodes("get")
 
+    acks = 0
+    errors: list[dict[str, str]] = []
     with LATENCY.labels(operation="get").time():
         for node in nodes:
-            response = await c.grpc_get(node, key)
-            if response.found:
-                HIT_COUNT.labels(operation="get").inc()
-                return {"key": key, "value": response.value.decode("utf-8"), "node": node}
+            try:
+                response = await c.grpc_get(node, key)
+            except Exception as exc:
+                errors.append({"node": node, "error": rpc_error_text(exc)})
+                continue
+            acks += 1
+            if not response.found:
+                continue
+            try:
+                value = response.value.decode("utf-8")
+            except UnicodeDecodeError:
+                REQUEST_FAILURES.labels(operation="get", reason="internal").inc()
+                raise HTTPException(
+                    status_code=500, detail="Stored value is not valid UTF-8"
+                ) from None
+            HIT_COUNT.labels(operation="get").inc()
+            return {"key": key, "value": value, "node": node}
 
-    REQUEST_FAILURES.labels(operation="get").inc()
-    raise HTTPException(status_code=404, detail="Key not found")
+    # A miss is a successful answer. Replicas that failed are not misses: with required=1
+    # a single answering replica that lacks the key decides the read, even when the
+    # replicas that hold it failed. Stage 4's read quorum fixes that.
+    if acks >= _REQUIRED_ACKS:
+        raise HTTPException(status_code=404, detail="Key not found")
+    return _unavailable("get", acks, errors)
 
 
-@router.post("/kv/{key}")
-async def put_key(key: str, payload: dict[str, str], c: CoordinatorDep) -> dict[str, Any]:
+@router.post("/kv/{key}", response_model=None)
+async def put_key(
+    key: str, payload: dict[str, str], c: CoordinatorDep
+) -> dict[str, Any] | JSONResponse:
     REQUEST_COUNT.labels(operation="put").inc()
     value = payload.get("value")
     if value is None:
         raise HTTPException(status_code=400, detail="Missing value")
     nodes = await c.replicas_for(key)
     if not nodes:
-        raise HTTPException(status_code=503, detail="No cache nodes available")
+        return _no_nodes("put")
 
-    failures = 0
     with LATENCY.labels(operation="put").time():
-        for node in nodes:
-            try:
-                response = await c.grpc_put(node, key, value.encode("utf-8"))
-                if not response.ok:
-                    failures += 1
-            except Exception:
-                failures += 1
-
-    if failures == len(nodes):
-        REQUEST_FAILURES.labels(operation="put").inc()
-        raise HTTPException(status_code=503, detail="Write failed on all replicas")
-    return {"key": key, "replicas": nodes, "failures": failures}
+        acks, errors = await _write_votes(nodes, lambda node: c.grpc_put(node, key, value.encode()))
+    if acks < _REQUIRED_ACKS:
+        return _unavailable("put", acks, errors)
+    return {"key": key, "replicas": nodes, "failures": len(errors)}
 
 
-@router.delete("/kv/{key}")
-async def delete_key(key: str, c: CoordinatorDep) -> dict[str, Any]:
+@router.delete("/kv/{key}", response_model=None)
+async def delete_key(key: str, c: CoordinatorDep) -> dict[str, Any] | JSONResponse:
     REQUEST_COUNT.labels(operation="delete").inc()
     nodes = await c.replicas_for(key)
     if not nodes:
-        raise HTTPException(status_code=503, detail="No cache nodes available")
+        return _no_nodes("delete")
 
-    failures = 0
     with LATENCY.labels(operation="delete").time():
-        for node in nodes:
-            try:
-                response = await c.grpc_delete(node, key)
-                if not response.ok:
-                    failures += 1
-            except Exception:
-                failures += 1
+        acks, errors = await _write_votes(nodes, lambda node: c.grpc_delete(node, key))
+    if acks < _REQUIRED_ACKS:
+        return _unavailable("delete", acks, errors)
+    return {"key": key, "replicas": nodes, "failures": len(errors)}
 
-    if failures == len(nodes):
-        REQUEST_FAILURES.labels(operation="delete").inc()
-        raise HTTPException(status_code=503, detail="Delete failed on all replicas")
-    return {"key": key, "replicas": nodes, "failures": failures}
+
+async def _write_votes(
+    nodes: list[str],
+    call: Callable[[str], Awaitable[Any]],
+) -> tuple[int, list[dict[str, str]]]:
+    acks = 0
+    errors: list[dict[str, str]] = []
+    for node in nodes:
+        try:
+            response = await call(node)
+        except Exception as exc:
+            errors.append({"node": node, "error": rpc_error_text(exc)})
+            continue
+        if response.ok:
+            acks += 1
+        else:
+            errors.append({"node": node, "error": response.error or "not ok"})
+    return acks, errors
 
 
 @asynccontextmanager

@@ -7,6 +7,21 @@ import grpc
 from .generated import cache_pb2_grpc
 
 
+def rpc_error_text(exc: BaseException) -> str:
+    """One line for logs and the 503 body. AioRpcError's own str() is a debug dump."""
+    code = getattr(exc, "code", None)
+    details = getattr(exc, "details", None)
+    if callable(code) and callable(details):
+        try:
+            name = getattr(code(), "name", None)
+            if isinstance(name, str):
+                return f"{name}: {details()}"
+        except Exception:
+            pass
+    text = str(exc).strip() or type(exc).__name__
+    return f"{type(exc).__name__}: {text}"
+
+
 class GrpcClientPool:
     def __init__(self) -> None:
         self._channels: dict[str, grpc.aio.Channel] = {}
