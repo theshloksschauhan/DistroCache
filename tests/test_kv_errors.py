@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 import grpc
 import pytest
@@ -239,3 +240,19 @@ def test_no_nodes_is_503_with_the_vote_body() -> None:
     assert body.get("required") == 1
     assert body.get("errors") == []
     assert _failures("put", reason="unavailable") == before + 1
+
+
+def test_failed_vote_is_logged(caplog: pytest.LogCaptureFixture) -> None:
+    coordinator = _coordinator_for("127.0.0.1:9", replication_factor=1)
+
+    async def down(node: str, key: str, value: bytes) -> cache_pb2.PutResponse:
+        raise RuntimeError("unreachable")
+
+    coordinator.grpc_put = down  # type: ignore[method-assign]
+    caplog.set_level(logging.WARNING, logger="distrocache.api")
+    _invoke(put_key("k", {"value": "v"}, coordinator))
+
+    assert any(
+        r.levelno == logging.WARNING and "127.0.0.1:9" in r.message and "unreachable" in r.message
+        for r in caplog.records
+    )

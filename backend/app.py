@@ -66,6 +66,11 @@ def _retryable(exc: BaseException) -> bool:
     return status in (grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED)
 
 
+def _failed_vote(operation: str, node: str, error: str, errors: list[dict[str, str]]) -> None:
+    errors.append({"node": node, "error": error})
+    logger.warning("%s on %s failed: %s", operation, node, error)
+
+
 def _unavailable(operation: str, acks: int, errors: list[dict[str, str]]) -> JSONResponse:
     REQUEST_FAILURES.labels(operation=operation, reason="unavailable").inc()
     return JSONResponse(
@@ -338,7 +343,7 @@ async def get_key(key: str, c: CoordinatorDep) -> dict[str, Any] | JSONResponse:
             try:
                 response = await c.grpc_get(node, key)
             except Exception as exc:
-                errors.append({"node": node, "error": rpc_error_text(exc)})
+                _failed_vote("get", node, rpc_error_text(exc), errors)
                 continue
             acks += 1
             if not response.found:
@@ -374,7 +379,9 @@ async def put_key(
         return _no_nodes("put")
 
     with LATENCY.labels(operation="put").time():
-        acks, errors = await _write_votes(nodes, lambda node: c.grpc_put(node, key, value.encode()))
+        acks, errors = await _write_votes(
+            "put", nodes, lambda node: c.grpc_put(node, key, value.encode())
+        )
     if acks < _REQUIRED_ACKS:
         return _unavailable("put", acks, errors)
     return {"key": key, "replicas": nodes, "failures": len(errors)}
@@ -388,13 +395,14 @@ async def delete_key(key: str, c: CoordinatorDep) -> dict[str, Any] | JSONRespon
         return _no_nodes("delete")
 
     with LATENCY.labels(operation="delete").time():
-        acks, errors = await _write_votes(nodes, lambda node: c.grpc_delete(node, key))
+        acks, errors = await _write_votes("delete", nodes, lambda node: c.grpc_delete(node, key))
     if acks < _REQUIRED_ACKS:
         return _unavailable("delete", acks, errors)
     return {"key": key, "replicas": nodes, "failures": len(errors)}
 
 
 async def _write_votes(
+    operation: str,
     nodes: list[str],
     call: Callable[[str], Awaitable[Any]],
 ) -> tuple[int, list[dict[str, str]]]:
@@ -404,12 +412,12 @@ async def _write_votes(
         try:
             response = await call(node)
         except Exception as exc:
-            errors.append({"node": node, "error": rpc_error_text(exc)})
+            _failed_vote(operation, node, rpc_error_text(exc), errors)
             continue
         if response.ok:
             acks += 1
         else:
-            errors.append({"node": node, "error": response.error or "not ok"})
+            _failed_vote(operation, node, response.error or "not ok", errors)
     return acks, errors
 
 
