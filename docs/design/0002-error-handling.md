@@ -88,6 +88,11 @@ shutdown still cancels the tasks.
 
 ### Worst-case latency, and a false 404
 
+> **Resolved in Stage 4** (design record 0004): fan-out is now parallel and the read waits for R
+> responses and picks the highest version, so one miss can no longer decide a read and the
+> response no longer waits out the full sequential budget. The analysis below describes the
+> Stage 2/3 behaviour that Stage 4 replaced.
+
 Both are fixed by Stage 4.
 
 With sequential fan-out the coordinator waits for every replica, and every attempt can use
