@@ -52,6 +52,20 @@ class HarnessError(RuntimeError):
     """The harness or the cluster misbehaved; not the behaviour under test."""
 
 
+class PortInUseError(HarnessError):
+    """A child exited at startup because its port was taken (free_port() can race)."""
+
+
+# A first try plus up to 3 retries on a new port.
+PORT_ATTEMPTS = 4
+# gRPC on any OS; uvicorn on any OS; the generic Linux errno text.
+BIND_FAILURE_MARKERS = (
+    "failed to bind to address",
+    "error while attempting to bind",
+    "address already in use",
+)
+
+
 def require(condition: bool, message: str) -> None:
     """Check a precondition. Failing raises HarnessError, never AssertionError."""
     if not condition:
@@ -127,13 +141,30 @@ class Process:
         self.log_path = log_path
         self.popen: subprocess.Popen[bytes] | None = None
         self._log: IO[bytes] | None = None
+        self._start_offset = 0
 
     @property
     def running(self) -> bool:
         return self.popen is not None and self.popen.poll() is None
 
+    def check_alive(self) -> None:
+        """Raise if the process has exited; PortInUseError if it failed to bind."""
+        if self.running:
+            return
+        log = self.startup_log()
+        if any(marker in log.lower() for marker in BIND_FAILURE_MARKERS):
+            raise PortInUseError(f"{self.name} could not bind its port")
+        raise HarnessError(f"{self.name} exited during startup:\n{log[-3000:]}")
+
+    def startup_log(self) -> str:
+        """Log output since the most recent start()."""
+        if not self.log_path.exists():
+            return ""
+        return self.log_path.read_bytes()[self._start_offset :].decode("utf-8", "replace")
+
     def start(self) -> None:
         require(not self.running, f"{self.name} is already running")
+        self._start_offset = self.log_path.stat().st_size if self.log_path.exists() else 0
         self._log = open(self.log_path, "ab")  # closed in _reap()
         self._log.write(f"\n===== start {self.name} at {time.strftime('%X')} =====\n".encode())
         self._log.flush()
@@ -233,7 +264,8 @@ class Cluster:
         for handle in handles:
             self._launch(handle)
         for handle in handles:
-            self._wait_node_ready(handle)
+            # Seeded addresses are already fixed in the coordinator's config.
+            self._await_node(handle, may_change_port=not self.seed_nodes)
         self.wait_for_rebalances_settled()
 
     def close(self, print_logs: bool) -> None:
@@ -264,7 +296,6 @@ class Cluster:
         return env
 
     def _start_coordinator(self, seeds: list[str]) -> None:
-        port = free_port()
         env = self._base_env()
         env.update(
             NODE_ADDRESSES=",".join(seeds),
@@ -276,29 +307,39 @@ class Cluster:
             RETRY_ATTEMPTS="2",
             RETRY_BACKOFF="0.05",
         )
-        args = [sys.executable, "-m", "uvicorn", "backend.app:app"]
-        args += ["--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"]
-        self.coordinator = Process("coordinator", args, env, self.workdir / "coordinator.log")
-        self.url = f"http://127.0.0.1:{port}"
-        self.coordinator.start()
+        for attempt in range(1, PORT_ATTEMPTS + 1):
+            port = free_port()
+            args = [sys.executable, "-m", "uvicorn", "backend.app:app"]
+            args += ["--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"]
+            coordinator = Process("coordinator", args, env, self.workdir / "coordinator.log")
+            self.coordinator = coordinator
+            self.url = f"http://127.0.0.1:{port}"
+            coordinator.start()
 
-        def ready() -> bool:
-            require(self.coordinator is not None and self.coordinator.running, "coordinator died")
-            return self.http.get(f"{self.url}/membership/nodes").status_code == 200
+            def ready(coordinator: Process = coordinator) -> bool:
+                coordinator.check_alive()
+                # Short timeout: if another listener holds the port it accepts but never answers.
+                response = self.http.get(f"{self.url}/membership/nodes", timeout=1.0)
+                return response.status_code == 200
 
-        wait_until(ready, STARTUP_TIMEOUT, "the coordinator to accept requests")
+            try:
+                wait_until(ready, STARTUP_TIMEOUT, "the coordinator to accept requests")
+                return
+            except PortInUseError:
+                coordinator.kill()
+                if attempt == PORT_ATTEMPTS:
+                    raise HarnessError(
+                        f"coordinator could not bind a free port after {PORT_ATTEMPTS} attempts"
+                    ) from None
 
     def _new_node_handle(self) -> NodeHandle:
         index = len(self.nodes) + 1
         node_id = f"node{index}"
-        port = free_port()
         storage_path = self.workdir / f"{node_id}.db"
         env = self._base_env()
         env.update(
             NODE_ID=node_id,
             GRPC_HOST="127.0.0.1",
-            GRPC_PORT=str(port),
-            NODE_ADDRESS=f"127.0.0.1:{port}",
             HEARTBEAT_INTERVAL=str(NODE_HEARTBEAT_INTERVAL),
             REPLICATION_FACTOR=str(self.replication_factor),
             GRPC_TIMEOUT="0.5",
@@ -307,20 +348,45 @@ class Cluster:
         process = Process(
             node_id, [sys.executable, "-m", "node.app"], env, self.workdir / f"{node_id}.log"
         )
-        handle = NodeHandle(node_id, port, storage_path, process)
+        handle = NodeHandle(node_id, 0, storage_path, process)
+        self._set_port(handle, free_port())
         self.nodes[node_id] = handle
         return handle
+
+    def _set_port(self, handle: NodeHandle, port: int) -> None:
+        handle.port = port
+        handle.process.env.update(GRPC_PORT=str(port), NODE_ADDRESS=handle.address)
 
     def _launch(self, handle: NodeHandle) -> None:
         require(bool(self.url), "start the coordinator before any node")
         handle.process.env["BACKEND_URL"] = self.url
         handle.process.start()
 
+    def _await_node(self, handle: NodeHandle, may_change_port: bool) -> None:
+        """Wait for a launched node; relaunch on a new port if its port was taken."""
+        for attempt in range(1, PORT_ATTEMPTS + 1):
+            try:
+                self._wait_node_ready(handle)
+                return
+            except PortInUseError:
+                handle.process.kill()
+                if not may_change_port:
+                    raise HarnessError(
+                        f"{handle.node_id} must keep port {handle.port}, but it is taken"
+                    ) from None
+                if attempt == PORT_ATTEMPTS:
+                    raise HarnessError(
+                        f"{handle.node_id} could not bind a free port "
+                        f"after {PORT_ATTEMPTS} attempts"
+                    ) from None
+                self._set_port(handle, free_port())
+                self._launch(handle)
+
     def _wait_node_ready(self, handle: NodeHandle) -> None:
         started = time.time()
 
         def ready() -> bool:
-            require(handle.process.running, f"{handle.node_id} exited during startup")
+            handle.process.check_alive()
             return self.node_health(handle) and self.node_status(handle) == "up"
 
         wait_until(ready, STARTUP_TIMEOUT, f"{handle.node_id} to serve and register")
@@ -339,7 +405,7 @@ class Cluster:
     def add_node(self) -> NodeHandle:
         handle = self._new_node_handle()
         self._launch(handle)
-        self._wait_node_ready(handle)
+        self._await_node(handle, may_change_port=True)
         return handle
 
     def kill(self, handle: NodeHandle) -> None:
@@ -355,7 +421,7 @@ class Cluster:
         """Start a stopped or killed node again: same id, port, address and database."""
         require(not handle.process.running, f"{handle.node_id} is still running")
         self._launch(handle)
-        self._wait_node_ready(handle)
+        self._await_node(handle, may_change_port=False)
 
     # ----- coordinator views -------------------------------------------------------
 
