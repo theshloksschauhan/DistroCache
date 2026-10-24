@@ -10,9 +10,10 @@ from typing import Optional
 
 import grpc
 
-from .generated import cache_pb2, cache_pb2_grpc
-from .grpc_client import GrpcClientPool
-from .hashing import ConsistentHashRing
+from common.generated import cache_pb2, cache_pb2_grpc
+from common.grpc_client import GrpcClientPool
+from common.hashing import ConsistentHashRing
+
 from .membership_client import MembershipClient
 from .storage import Storage
 

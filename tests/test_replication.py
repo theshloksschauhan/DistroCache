@@ -1,4 +1,4 @@
-from backend.hashing import ConsistentHashRing
+from common.hashing import ConsistentHashRing
 
 
 def test_replication_respects_node_count() -> None:
