@@ -242,12 +242,14 @@ class Cluster:
         replication_factor: int = 3,
         heartbeat_timeout: float = 30.0,
         seed_nodes: bool = False,
+        coordinator_env: dict[str, str] | None = None,
     ) -> None:
         self.workdir = workdir
         self.workdir.mkdir(parents=True, exist_ok=True)
         self.replication_factor = replication_factor
         self.heartbeat_timeout = heartbeat_timeout
         self.seed_nodes = seed_nodes
+        self.coordinator_env = coordinator_env or {}
         self.nodes: dict[str, NodeHandle] = {}
         self.coordinator: Process | None = None
         self.url = ""
@@ -297,6 +299,7 @@ class Cluster:
 
     def _start_coordinator(self, seeds: list[str]) -> None:
         env = self._base_env()
+        env.update(self.coordinator_env)
         env.update(
             NODE_ADDRESSES=",".join(seeds),
             REPLICATION_FACTOR=str(self.replication_factor),
@@ -422,6 +425,22 @@ class Cluster:
         require(not handle.process.running, f"{handle.node_id} is still running")
         self._launch(handle)
         self._await_node(handle, may_change_port=False)
+
+    def relaunch(self, handle: NodeHandle) -> None:
+        """Start a stopped node and wait until it serves and registers.
+
+        restart() also waits until the coordinator's own health check reaches the node.
+        That wait hides a gRPC channel stuck in reconnect backoff, so tests that want to
+        observe the channel use relaunch() instead.
+        """
+        require(not handle.process.running, f"{handle.node_id} is still running")
+        self._launch(handle)
+
+        def serving() -> bool:
+            handle.process.check_alive()
+            return self.node_health(handle) and self.node_status(handle) == "up"
+
+        wait_until(serving, STARTUP_TIMEOUT, f"{handle.node_id} to serve and register")
 
     # ----- coordinator views -------------------------------------------------------
 
