@@ -145,41 +145,56 @@ class Coordinator:
 
     async def _refresh_health_loop(self) -> None:
         while True:
-            nodes = await self.registry.live_addresses()
-            for node in nodes:
-                start = time.perf_counter()
-                ok = False
-                try:
-                    stub = await self.clients.get_stub(node)
-                    response = await stub.Health(
-                        cache_pb2.HealthRequest(), timeout=self.settings.request_timeout
-                    )
-                    ok = response.ok
-                except Exception as exc:
-                    logger.warning("health check failed for %s: %s", node, exc)
-                    ok = False
-                latency_ms = (time.perf_counter() - start) * 1000
-                self.cluster_state[node] = {
-                    "ok": ok,
-                    "last_seen": time.time(),
-                    "latency_ms": latency_ms,
-                }
-                NODE_STATUS.labels(node=node).set(1 if ok else 0)
-            ACTIVE_NODES.set(len(nodes))
-            await self.ws_manager.broadcast(
-                {
-                    "type": "cluster",
-                    "nodes": self.cluster_state,
-                    "rebalances": self.recent_rebalances[-10:],
-                }
-            )
+            try:
+                await self._refresh_health_once()
+            except Exception:
+                # One bad poll must not end the loop: harness readiness and the
+                # dashboard both depend on it. CancelledError is a BaseException,
+                # so shutdown still cancels the task.
+                logger.exception("health loop iteration failed")
             await asyncio.sleep(self.settings.health_interval)
+
+    async def _refresh_health_once(self) -> None:
+        nodes = await self.registry.live_addresses()
+        for node in nodes:
+            start = time.perf_counter()
+            ok = False
+            try:
+                stub = await self.clients.get_stub(node)
+                response = await stub.Health(
+                    cache_pb2.HealthRequest(), timeout=self.settings.request_timeout
+                )
+                ok = response.ok
+            except Exception as exc:
+                logger.warning("health check failed for %s: %s", node, exc)
+                ok = False
+            latency_ms = (time.perf_counter() - start) * 1000
+            self.cluster_state[node] = {
+                "ok": ok,
+                "last_seen": time.time(),
+                "latency_ms": latency_ms,
+            }
+            NODE_STATUS.labels(node=node).set(1 if ok else 0)
+        ACTIVE_NODES.set(len(nodes))
+        await self.ws_manager.broadcast(
+            {
+                "type": "cluster",
+                "nodes": self.cluster_state,
+                "rebalances": self.recent_rebalances[-10:],
+            }
+        )
 
     async def _prune_membership_loop(self) -> None:
         while True:
-            nodes = await self.registry.prune_expired()
-            ACTIVE_NODES.set(len([node for node in nodes if node.status == "up"]))
+            try:
+                await self._prune_membership_once()
+            except Exception:
+                logger.exception("membership prune iteration failed")
             await asyncio.sleep(self.settings.heartbeat_interval)
+
+    async def _prune_membership_once(self) -> None:
+        nodes = await self.registry.prune_expired()
+        ACTIVE_NODES.set(len([node for node in nodes if node.status == "up"]))
 
     async def _rpc(self, node: str, method: str, request: Any) -> Any:
         """One replica call. Retry only when another try could succeed.
