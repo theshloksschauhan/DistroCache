@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
@@ -85,3 +86,35 @@ def test_rebalance_keeps_a_write_that_lands_during_the_push(tmp_path: Path) -> N
         )
 
     asyncio.run(scenario())
+
+
+def test_rebalance_logs_a_failed_push(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    class Boom:
+        async def PutReplica(
+            self, request: cache_pb2.PutReplicaRequest, timeout: float
+        ) -> cache_pb2.PutReplicaResponse:
+            raise RuntimeError("unreachable")
+
+    class BoomPool:
+        async def get_stub(self, target: str) -> Boom:
+            return Boom()
+
+        async def close(self) -> None:
+            return None
+
+    async def scenario() -> None:
+        node = Node(_config(tmp_path), client_pool=BoomPool())  # type: ignore[arg-type]
+        try:
+            await node.storage.initialize()
+            await node.storage.put("moving", b"old")
+            caplog.set_level(logging.WARNING, logger="distrocache.node")
+            await node._rebalance_once(["127.0.0.1:2", "127.0.0.1:3"])
+        finally:
+            await node.membership.close()
+            node.storage.close()
+
+    asyncio.run(scenario())
+    assert any(
+        "127.0.0.1:2" in record.message and "unreachable" in record.message
+        for record in caplog.records
+    )

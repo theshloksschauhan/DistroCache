@@ -137,14 +137,14 @@ Frontend:
 - `VITE_API_URL` to the API base URL (build-time).
 
 ## Known limitations (being addressed)
-Each correctness limitation below has a reproducing test marked `xfail` in `tests/`.
+Open correctness limitations. The ones with a reproducing test are marked `xfail` in `tests/`.
 
-- Reads return the first replica that has the key; there is no read quorum.
+- Reads return the first replica that has the key; there is no read quorum. One answering
+  replica that lacks the key is a 404 even when every replica that holds the key failed.
 - Writes succeed if any one replica acknowledges them.
 - Deletes leave no tombstones, so a replica that missed a delete can still serve the deleted value.
-- Entry versions are per-node counters, not cluster-wide.
-- A dead replica can make `GET` return HTTP 500 instead of trying the remaining replicas, and
-  that failure is not counted in `distrocache_request_failures_total`.
+- Entry versions are per-node counters, not cluster-wide. A timed-out write is retried, and the
+  node can apply that retry as a second write.
 - Nodes listed in `NODE_ADDRESSES` get a second `seed-N` membership record that is later marked down.
 - A rebalance can delete a write that reaches a node while that node is handing the key off.
 - A single coordinator holds membership and routes every request.

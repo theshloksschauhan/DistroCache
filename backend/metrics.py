@@ -19,8 +19,8 @@ LATENCY = Histogram(
 )
 REQUEST_FAILURES = Counter(
     "distrocache_request_failures_total",
-    "Total number of failed requests",
-    ["operation"],
+    "Requests the coordinator could not complete. Misses are not counted.",
+    ["operation", "reason"],
 )
 NODE_STATUS = Gauge(
     "distrocache_node_up",

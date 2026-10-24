@@ -13,7 +13,7 @@ from typing import Any
 import grpc
 
 from distrocache_common.generated import cache_pb2, cache_pb2_grpc
-from distrocache_common.grpc_client import GrpcClientPool
+from distrocache_common.grpc_client import GrpcClientPool, rpc_error_text
 from distrocache_common.hashing import ConsistentHashRing
 
 from .membership_client import MembershipClient
@@ -267,7 +267,13 @@ class Node:
                     if response.ok and response.applied:
                         replicas_restored += 1
                         applied_any = True
-                except Exception:
+                except Exception as exc:
+                    logger.warning(
+                        "rebalance push of %s to %s failed: %s",
+                        key,
+                        replica,
+                        rpc_error_text(exc),
+                    )
                     continue
             if self.config.node_address not in replicas and applied_any:
                 removed = await self.storage.delete(key)
