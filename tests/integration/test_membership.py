@@ -25,7 +25,11 @@ HEARTBEAT_TIMEOUT = 2.0
 def test_seeded_nodes_have_one_live_record_each(cluster_factory: ClusterFactory) -> None:
     cluster = cluster_factory(nodes=3, seed_nodes=True, heartbeat_timeout=HEARTBEAT_TIMEOUT)
 
-    # Seed records never heartbeat, so give the coordinator time to prune them if it would.
+    # A fixed wait on purpose, not polling. Seed records get last_seen at coordinator start
+    # and never heartbeat, so they can only go down once HEARTBEAT_TIMEOUT has passed and the
+    # prune loop (every 0.2 s) has run. The correct behaviour is that nothing changes, and
+    # an absence has no event to poll for: the test must sit out the whole window. 2x the
+    # timeout covers the prune interval and scheduling delays.
     time.sleep(HEARTBEAT_TIMEOUT * 2)
     records = cluster.membership()["nodes"]
 
