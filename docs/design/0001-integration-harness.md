@@ -35,7 +35,17 @@ test's `tmp_path`. Children get their own process group on Windows so `CTRL_BREA
 them. It provides:
 
 - `kill()` (hard, no shutdown code), `stop()` (graceful; returns the exit code), `restart()`
-  (same id, port, address and database), `add_node()`.
+  (same id, port, address and database), `add_node()`. `kill()` and `stop()` return only once
+  the node's port can be bound again: on Windows the venv `python.exe` is a launcher whose
+  child interpreter exits a moment after the launcher is killed.
+- Port retry: `free_port()` can race with other processes. If a node or the coordinator
+  exits at startup and its log shows a bind failure, the harness retries on a new free port up
+  to 3 times, then raises `HarnessError`. `restart()` and seeded clusters must keep their
+  addresses, so for them a taken port is an immediate `HarnessError`. The node disables gRPC's
+  Linux-default `SO_REUSEPORT`, so a second bind of the same port fails instead of silently
+  sharing it.
+- The harness HTTP client uses no keep-alive: on Linux uvicorn resets the connection after an
+  unhandled exception, which would break the request that follows a 500.
 - Readiness: a node is ready when it answers gRPC `Health`, its record is `up`, and the
   coordinator's own health loop has reached it after the start. The last check matters because
   the coordinator caches one gRPC channel per address, and after a restart that channel can be in
@@ -125,6 +135,17 @@ these two tests must then be updated, not silently pass.
   working.
 - Per-test clusters are slower than a shared one but keep tests independent; a failure in one
   cannot poison another.
+- `test_membership` keeps one fixed wait (2 x `HEARTBEAT_TIMEOUT`). It has to show that seed
+  records do *not* go down, and an absence can't be polled for.
+
+### Carried forward
+
+- **Stage 2:** guard the coordinator's health loop against exceptions so one bad poll can't
+  kill it; log and continue. Harness readiness depends on that loop.
+- **Stage 7:** add a `node_id` label to the rebalance metrics, and switch the version tests
+  from the "`ring_version` unchanged, so it was X" inference to that label.
+- **Later:** on Windows, put harness child processes in a Job Object with kill-on-close, so a
+  `pytest-timeout` exit (thread method, no teardown or `atexit`) can't orphan them.
 
 ## Alternatives considered
 
