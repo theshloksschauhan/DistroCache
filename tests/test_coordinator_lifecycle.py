@@ -23,14 +23,14 @@ def test_background_loops_survive_one_failed_iteration() -> None:
     coordinator: Coordinator = app.state.coordinator
     health_calls = {"n": 0}
     prune_calls = {"n": 0}
-    live_addresses = coordinator.registry.live_addresses
+    ring_addresses = coordinator.registry.ring_addresses
     prune_expired = coordinator.registry.prune_expired
 
-    async def flaky_live() -> list[str]:
+    async def flaky_ring() -> list[str]:
         health_calls["n"] += 1
         if health_calls["n"] == 1:
             raise RuntimeError("health blew up")
-        return await live_addresses()
+        return await ring_addresses()
 
     async def flaky_prune() -> list[object]:
         prune_calls["n"] += 1
@@ -38,7 +38,7 @@ def test_background_loops_survive_one_failed_iteration() -> None:
             raise RuntimeError("prune blew up")
         return await prune_expired()
 
-    coordinator.registry.live_addresses = flaky_live  # type: ignore[method-assign]
+    coordinator.registry.ring_addresses = flaky_ring  # type: ignore[method-assign]
     coordinator.registry.prune_expired = flaky_prune  # type: ignore[method-assign]
 
     with TestClient(app):

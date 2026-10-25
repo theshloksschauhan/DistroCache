@@ -51,6 +51,7 @@ HEARTBEAT_FAILURES = Counter(
 REBALANCE_DURATION = Histogram(
     "distrocache_rebalance_duration_seconds",
     "Rebalance duration in seconds",
+    ["node_id"],
 )
 READ_REPAIRS = Counter(
     "distrocache_read_repairs_total",
@@ -59,8 +60,10 @@ READ_REPAIRS = Counter(
 REBALANCE_EVENTS = Counter(
     "distrocache_rebalance_events_total",
     "Rebalance events",
+    ["node_id"],
 )
 REPLICA_RESTORES = Counter(
     "distrocache_replica_restores_total",
     "Replica restoration events",
+    ["node_id"],
 )

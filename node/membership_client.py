@@ -30,7 +30,8 @@ class MembershipClient:
         return int(data.get("ring_version", 0)), list(data.get("nodes", []))
 
     async def deregister(self) -> None:
-        payload = {"node_id": self._node_id}
+        # The registry keys records by address; node_id travels only for logging.
+        payload = {"node_id": self._node_id, "address": self._address}
         response = await self._client.post(f"{self._base_url}/membership/deregister", json=payload)
         response.raise_for_status()
 

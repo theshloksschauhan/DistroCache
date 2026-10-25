@@ -14,7 +14,7 @@ ClusterFactory = Callable[..., Cluster]
 
 
 def test_delete_is_not_undone_by_a_replica_that_missed_it(cluster_factory: ClusterFactory) -> None:
-    cluster = cluster_factory(nodes=3, heartbeat_timeout=60)
+    cluster = cluster_factory(nodes=3, dead_timeout=60)
     key = "deleted"
     missed = cluster.handles_for(key)[0]
     cluster.write(key, "v1")
@@ -22,10 +22,10 @@ def test_delete_is_not_undone_by_a_replica_that_missed_it(cluster_factory: Clust
     cluster.kill(missed)
     require(cluster.delete(key).status_code == 200, "setup DELETE failed")
 
-    rebalances = cluster.rebalance_count()
+    rebalances = cluster.rebalance_count(node_id=missed.node_id)
     cluster.restart(missed)
     # Let the restarted node's own startup rebalance finish so the GET sees a settled state.
-    cluster.wait_for_rebalance_after(rebalances)
+    cluster.wait_for_rebalance_after(rebalances, node_id=missed.node_id)
 
     response = cluster.get(key)
 
