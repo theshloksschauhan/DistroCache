@@ -575,3 +575,16 @@ class Cluster:
             version.logical,
             version.coordinator_id,
         )
+
+    def node_scan(self, handle: NodeHandle, key: str) -> tuple[tuple[int, int, str], bool] | None:
+        """(version, tombstone) stored on that node for `key`, or None if the row is absent.
+
+        Direct GetEntry, bypassing the coordinator; reports tombstones too (found with their
+        version), so the consistency checker can judge convergence and durability from ground
+        truth rather than a quorum read.
+        """
+        response = self._call_node(handle, "GetEntry", cache_pb2.GetEntryRequest(key=key))
+        if not response.found:
+            return None
+        v = response.entry.version
+        return (v.physical_ms, v.logical, v.coordinator_id), bool(response.entry.tombstone)
