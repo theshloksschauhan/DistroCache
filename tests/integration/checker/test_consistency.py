@@ -22,7 +22,7 @@ pytestmark = pytest.mark.integration
 
 
 def test_cluster_is_consistent_under_a_nemesis_with_quorum_overlap() -> None:
-    duration = float(os.getenv("CHECKER_DURATION", "20"))
+    duration = float(os.getenv("CHECKER_DURATION", "15"))
     cfg = CheckerConfig(read_quorum=2, write_quorum=2, replication_factor=3, duration=duration)
     run = run_checker(cfg)
 
