@@ -14,8 +14,8 @@ ClusterFactory = Callable[..., Cluster]
 
 
 def test_a_read_repairs_a_stale_replica(cluster_factory: ClusterFactory) -> None:
-    # Long timeout: the killed node must stay "up" so the ring (and ring_version) never changes.
-    cluster = cluster_factory(nodes=3, heartbeat_timeout=60)
+    # Long DEAD_TIMEOUT: the killed node must stay a ring member so the ring never changes.
+    cluster = cluster_factory(nodes=3, dead_timeout=60)
     key = "repair-me"
     stale, *others = cluster.handles_for(key)
     cluster.write(key, "v1")
@@ -26,12 +26,10 @@ def test_a_read_repairs_a_stale_replica(cluster_factory: ClusterFactory) -> None
         entry = cluster.node_entry(handle, key)
         require(entry is not None and entry[0] == "v2", f"{handle.node_id} holds {entry}")
 
-    ring_version = cluster.ring_version()
-    rebalances = cluster.rebalance_count()
+    rebalances = cluster.rebalance_count(node_id=stale.node_id)
     cluster.restart(stale)
     # The restarted node's own rebalance only pushes its stale v1, which the others reject.
-    cluster.wait_for_rebalance_after(rebalances)
-    require(cluster.ring_version() == ring_version, "ring changed; other nodes may have rebalanced")
+    cluster.wait_for_rebalance_after(rebalances, node_id=stale.node_id)
     before = cluster.node_entry(stale, key)
     require(before is not None and before[0] == "v1", f"stale copy is {before}, expected v1")
 

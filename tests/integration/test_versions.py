@@ -14,8 +14,8 @@ ClusterFactory = Callable[..., Cluster]
 
 
 def test_rebalance_does_not_replace_newer_value_with_older(cluster_factory: ClusterFactory) -> None:
-    # Long timeout: the killed node must stay "up" so the ring (and ring_version) never changes.
-    cluster = cluster_factory(nodes=3, heartbeat_timeout=60)
+    # Long DEAD_TIMEOUT: the killed node must stay a ring member so the ring never changes.
+    cluster = cluster_factory(nodes=3, dead_timeout=60)
     key = "contested"
     returning, *others = cluster.handles_for(key)
     for value in ("v1", "v2", "v3"):
@@ -28,14 +28,12 @@ def test_rebalance_does_not_replace_newer_value_with_older(cluster_factory: Clus
         entry = cluster.node_entry(handle, key)
         require(entry is not None and entry[0] == "v4", f"{handle.node_id} holds {entry}")
 
-    ring_version = cluster.ring_version()
-    rebalances = cluster.rebalance_count()
+    rebalances = cluster.rebalance_count(node_id=returning.node_id)
     cluster.restart(returning)
-    # The restarted node's first heartbeat always triggers its own rebalance, which pushes
-    # its ("v3", 3) copy to the other owners. That push is the event under test.
-    cluster.wait_for_rebalance_after(rebalances)
-    # Same ring_version means only the restarted node rebalanced.
-    require(cluster.ring_version() == ring_version, "ring changed; other nodes may have rebalanced")
+    # The restarted node's first heartbeat always triggers its own rebalance, which pushes its
+    # older copy to the other owners. Wait for that node's own rebalance via its node_id label;
+    # that push is the event under test.
+    cluster.wait_for_rebalance_after(rebalances, node_id=returning.node_id)
 
     for handle in others:
         entry = cluster.node_entry(handle, key)

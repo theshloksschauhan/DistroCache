@@ -26,6 +26,7 @@ def _config(tmp_path: Path) -> NodeConfig:
         backend_url=f"http://127.0.0.1:{_free_port()}",
         heartbeat_interval=0.05,
         replication_factor=3,
+        write_quorum=2,
         grpc_timeout=0.5,
         max_items=0,
         storage_path=str(tmp_path / "cache.db"),

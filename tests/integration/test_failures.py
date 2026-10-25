@@ -20,8 +20,9 @@ def test_get_succeeds_when_first_replica_is_dead(cluster_factory: ClusterFactory
     cluster.write(key, "v1")
 
     cluster.kill(first)
-    # The dead node must still be in the ring, otherwise the GET never contacts it.
-    require(cluster.node_status(first) == "up", "membership already dropped the killed node")
+    # The dead node must still be a ring member (and the key's first replica), so the read has
+    # to survive its failure. The coordinator may mark it down and skip it; the read still works.
+    require(cluster.is_member(first), "membership already dropped the killed node")
     require(cluster.preference_list(key)[0] == first.address, "killed node is not read first")
 
     response = cluster.get(key)

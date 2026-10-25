@@ -44,6 +44,7 @@ def _config(tmp_path: Path) -> NodeConfig:
         backend_url="http://127.0.0.1:1",
         heartbeat_interval=1.0,
         replication_factor=2,
+        write_quorum=2,
         grpc_timeout=0.5,
         max_items=0,
         storage_path=str(tmp_path / "cache.db"),
@@ -51,11 +52,6 @@ def _config(tmp_path: Path) -> NodeConfig:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="Stage 7: rebalance deletes the local row without checking it is still the pushed one",
-)
 def test_rebalance_keeps_a_write_that_lands_during_the_push(tmp_path: Path) -> None:
     async def scenario() -> None:
         node: Node

@@ -45,10 +45,12 @@ class NodeConfig:
     backend_url: str
     heartbeat_interval: float
     replication_factor: int
+    write_quorum: int
     grpc_timeout: float
     max_items: int
     storage_path: str
     tombstone_gc_seconds: int
+    rebalance_batch_size: int = 100
 
 
 def load_config() -> NodeConfig:
@@ -63,10 +65,12 @@ def load_config() -> NodeConfig:
         backend_url=os.getenv("BACKEND_URL", "http://localhost:8000"),
         heartbeat_interval=float(os.getenv("HEARTBEAT_INTERVAL", "2.0")),
         replication_factor=int(os.getenv("REPLICATION_FACTOR", "3")),
+        write_quorum=int(os.getenv("WRITE_QUORUM", "2")),
         grpc_timeout=float(os.getenv("GRPC_TIMEOUT", "1.0")),
         max_items=int(os.getenv("MAX_ITEMS", "0")),
         storage_path=os.getenv("STORAGE_PATH", "cache.db"),
         tombstone_gc_seconds=int(os.getenv("TOMBSTONE_GC_SECONDS", "3600")),
+        rebalance_batch_size=int(os.getenv("REBALANCE_BATCH_SIZE", "100")),
     )
 
 
@@ -284,47 +288,54 @@ class Node:
         entries = await self.storage.list_entries()
         keys_moved = 0
         replicas_restored = 0
-        for key, value, expires_at, version, tombstone in entries:
-            replicas = ring.get_nodes(key, self.config.replication_factor)
-            if not replicas:
-                continue
-            applied_any = False
-            for replica in replicas:
-                if replica == self.config.node_address:
+        # Process in batches to bound the work in flight for a large dataset.
+        batch_size = self.config.rebalance_batch_size
+        for start in range(0, len(entries), batch_size):
+            for key, value, expires_at, version, tombstone in entries[start : start + batch_size]:
+                replicas = ring.get_nodes(key, self.config.replication_factor)
+                if not replicas:
                     continue
-                try:
-                    stub = await self.client_pool.get_stub(replica)
-                    response = await stub.PutReplica(
-                        cache_pb2.PutReplicaRequest(
-                            key=key,
-                            value=value,
-                            expires_at=expires_at or 0.0,
-                            version=_version_proto(version),
-                            tombstone=tombstone,
-                        ),
-                        timeout=self.config.grpc_timeout,
-                    )
-                    # APPLIED or ALREADY_CURRENT both mean the owner now holds this version or
-                    # newer, so the key is safely replicated there.
-                    if response.status in (
-                        cache_pb2.WriteStatus.APPLIED,
-                        cache_pb2.WriteStatus.ALREADY_CURRENT,
-                    ):
-                        applied_any = True
-                        if response.status == cache_pb2.WriteStatus.APPLIED:
-                            replicas_restored += 1
-                except Exception as exc:
-                    logger.warning(
-                        "rebalance push of %s to %s failed: %s",
-                        key,
-                        replica,
-                        rpc_error_text(exc),
-                    )
-                    continue
-            if self.config.node_address not in replicas and applied_any:
-                removed = await self.storage.delete(key)
-                if removed:
-                    keys_moved += 1
+                owners_confirmed = 0
+                for replica in replicas:
+                    if replica == self.config.node_address:
+                        continue
+                    try:
+                        stub = await self.client_pool.get_stub(replica)
+                        response = await stub.PutReplica(
+                            cache_pb2.PutReplicaRequest(
+                                key=key,
+                                value=value,
+                                expires_at=expires_at or 0.0,
+                                version=_version_proto(version),
+                                tombstone=tombstone,
+                            ),
+                            timeout=self.config.grpc_timeout,
+                        )
+                        # APPLIED or ALREADY_CURRENT both mean the owner now holds this version
+                        # or newer, so the key is safely replicated there.
+                        if response.status in (
+                            cache_pb2.WriteStatus.APPLIED,
+                            cache_pb2.WriteStatus.ALREADY_CURRENT,
+                        ):
+                            owners_confirmed += 1
+                            if response.status == cache_pb2.WriteStatus.APPLIED:
+                                replicas_restored += 1
+                    except Exception as exc:
+                        logger.warning(
+                            "rebalance push of %s to %s failed: %s",
+                            key,
+                            replica,
+                            rpc_error_text(exc),
+                        )
+                        continue
+                # Drop the local copy only when this node no longer owns the key AND enough new
+                # owners confirmed it, and only if the row is unchanged since the snapshot
+                # (compare-and-delete), so a concurrent write is never lost. Over-replication is
+                # safe; losing a write is not.
+                still_owner = self.config.node_address in replicas
+                if not still_owner and owners_confirmed >= self.config.write_quorum:
+                    if await self.storage.delete_if_version(key, version):
+                        keys_moved += 1
         return keys_moved, replicas_restored
 
 

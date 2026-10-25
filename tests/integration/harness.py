@@ -241,6 +241,7 @@ class Cluster:
         workdir: Path,
         replication_factor: int = 3,
         heartbeat_timeout: float = 30.0,
+        dead_timeout: float = 30.0,
         seed_nodes: bool = False,
         coordinator_env: dict[str, str] | None = None,
     ) -> None:
@@ -248,6 +249,9 @@ class Cluster:
         self.workdir.mkdir(parents=True, exist_ok=True)
         self.replication_factor = replication_factor
         self.heartbeat_timeout = heartbeat_timeout
+        # Ring membership removal threshold (separate from liveness). Keep it long in tests that
+        # kill a node but need it to stay a ring member.
+        self.dead_timeout = dead_timeout
         self.seed_nodes = seed_nodes
         self.coordinator_env = coordinator_env or {}
         self.nodes: dict[str, NodeHandle] = {}
@@ -306,6 +310,7 @@ class Cluster:
             HEALTH_INTERVAL="0.5",
             HEARTBEAT_INTERVAL=str(COORDINATOR_PRUNE_INTERVAL),
             HEARTBEAT_TIMEOUT=str(self.heartbeat_timeout),
+            DEAD_TIMEOUT=str(self.dead_timeout),
             REQUEST_TIMEOUT="0.5",
             RETRY_ATTEMPTS="2",
             RETRY_BACKOFF="0.05",
@@ -482,10 +487,18 @@ class Cluster:
     def ring_version(self) -> int:
         return int(self.membership()["ring_version"])
 
+    def is_member(self, handle: NodeHandle) -> bool:
+        """True while this node's address is in the ring, regardless of its liveness status."""
+        return any(record["address"] == handle.address for record in self.membership()["nodes"])
+
     def preference_list(self, key: str) -> list[str]:
-        """Replicas for `key` in coordinator order, from the coordinator's live membership."""
-        live = [n["address"] for n in self.membership()["nodes"] if n["status"] == "up"]
-        return ConsistentHashRing(live).get_nodes(key, self.replication_factor)
+        """Replicas for `key` in coordinator order, from the coordinator's ring membership.
+
+        Every ring member counts, regardless of liveness, matching the coordinator: a node that
+        is briefly down keeps its place in the ring.
+        """
+        members = [n["address"] for n in self.membership()["nodes"]]
+        return ConsistentHashRing(members).get_nodes(key, self.replication_factor)
 
     def key_owned_first_by(self, handle: NodeHandle, prefix: str = "key") -> str:
         """A key whose preference list starts with `handle` (reads hit it first)."""
@@ -504,11 +517,20 @@ class Cluster:
         response.raise_for_status()
         return parse_metric(response.text, name, **labels)
 
-    def rebalance_count(self) -> float:
-        return self.metric("distrocache_rebalance_events_total")
+    def rebalance_count(self, node_id: str | None = None) -> float:
+        """Reported rebalances, total or for one node via the node_id metric label."""
+        if node_id is None:
+            return self.metric("distrocache_rebalance_events_total")
+        return self.metric("distrocache_rebalance_events_total", node_id=node_id)
 
-    def wait_for_rebalance_after(self, previous: float, timeout: float = 15.0) -> None:
-        wait_until(lambda: self.rebalance_count() > previous, timeout, "a rebalance to be reported")
+    def wait_for_rebalance_after(
+        self, previous: float, node_id: str | None = None, timeout: float = 15.0
+    ) -> None:
+        wait_until(
+            lambda: self.rebalance_count(node_id) > previous,
+            timeout,
+            "a rebalance to be reported",
+        )
 
     def wait_for_rebalances_settled(self, quiet: float = 1.5, timeout: float = 30.0) -> None:
         """Wait until no rebalance has been reported for `quiet` seconds."""

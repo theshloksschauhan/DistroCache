@@ -62,7 +62,7 @@ def test_write_reaches_a_restarted_node_within_a_few_seconds(
     # the test tells a 2s cap from the default schedule.
     cluster = cluster_factory(
         nodes=3,
-        heartbeat_timeout=60,
+        dead_timeout=60,
         coordinator_env={"GRPC_TRACE": "subchannel", "GRPC_VERBOSITY": "INFO"},
     )
     _run(cluster)

@@ -109,6 +109,7 @@ class Settings:
     health_interval: float = 2.0
     heartbeat_interval: float = 2.0
     heartbeat_timeout: float = 6.0
+    dead_timeout: float = 30.0
     request_timeout: float = 1.0
     retry_attempts: int = 2
     retry_backoff: float = 0.1
@@ -134,6 +135,7 @@ def load_settings() -> Settings:
         health_interval=float(os.getenv("HEALTH_INTERVAL", "2.0")),
         heartbeat_interval=float(os.getenv("HEARTBEAT_INTERVAL", "2.0")),
         heartbeat_timeout=float(os.getenv("HEARTBEAT_TIMEOUT", "6.0")),
+        dead_timeout=float(os.getenv("DEAD_TIMEOUT", "30.0")),
         request_timeout=float(os.getenv("REQUEST_TIMEOUT", "1.0")),
         retry_attempts=int(os.getenv("RETRY_ATTEMPTS", "2")),
         retry_backoff=float(os.getenv("RETRY_BACKOFF", "0.1")),
@@ -169,7 +171,9 @@ class Coordinator:
         self.clients = GrpcClientPool(channel_options=_RECONNECT_BACKOFF)
         self.ws_manager = WebSocketManager()
         self.registry = MembershipRegistry(
-            timeout_seconds=settings.heartbeat_timeout, seed_nodes=settings.node_addresses
+            heartbeat_timeout=settings.heartbeat_timeout,
+            dead_timeout=settings.dead_timeout,
+            seed_nodes=settings.node_addresses,
         )
         self.recent_rebalances: list[dict[str, Any]] = []
         self.cluster_state: dict[str, dict[str, Any]] = {}
@@ -209,7 +213,8 @@ class Coordinator:
             await asyncio.sleep(self.settings.health_interval)
 
     async def _refresh_health_once(self) -> None:
-        nodes = await self.registry.live_addresses()
+        nodes = await self.registry.ring_addresses()
+        live = 0
         for node in nodes:
             start = time.perf_counter()
             ok = False
@@ -228,8 +233,15 @@ class Coordinator:
                 "last_seen": time.time(),
                 "latency_ms": latency_ms,
             }
+            # The probe result drives the 'down' status the write/read paths skip on.
+            await self.registry.set_health(node, ok)
             NODE_STATUS.labels(node=node).set(1 if ok else 0)
-        ACTIVE_NODES.set(len(nodes))
+            live += 1 if ok else 0
+        # Drop dashboard rows for addresses that have left the ring so it does not grow forever.
+        for departed in set(self.cluster_state) - set(nodes):
+            del self.cluster_state[departed]
+            NODE_STATUS.labels(node=departed).set(0)
+        ACTIVE_NODES.set(live)
         await self.ws_manager.broadcast(
             {
                 "type": "cluster",
@@ -241,14 +253,10 @@ class Coordinator:
     async def _prune_membership_loop(self) -> None:
         while True:
             try:
-                await self._prune_membership_once()
+                await self.registry.prune_expired()
             except Exception:
                 logger.exception("membership prune iteration failed")
             await asyncio.sleep(self.settings.heartbeat_interval)
-
-    async def _prune_membership_once(self) -> None:
-        nodes = await self.registry.prune_expired()
-        ACTIVE_NODES.set(len([node for node in nodes if node.status == "up"]))
 
     async def _rpc(self, node: str, method: str, request: Any) -> Any:
         """One replica call. Retry only when another try could succeed.
@@ -309,8 +317,21 @@ class Coordinator:
         return await self._rpc(node, "PutReplica", request)
 
     async def replicas_for(self, key: str) -> list[str]:
-        nodes = await self.registry.live_addresses()
+        # The preference list is every ring member, regardless of liveness, so a short outage
+        # does not move a key's owners. Down members are skipped per request, not dropped here.
+        nodes = await self.registry.ring_addresses()
         return ConsistentHashRing(nodes).get_nodes(key, self.settings.replication_factor)
+
+    async def live_and_down(self, nodes: list[str]) -> tuple[list[str], list[dict[str, str]]]:
+        """Split a preference list into nodes worth calling and failed votes for the down ones.
+
+        A node the health loop currently sees as down is counted as a failed vote immediately,
+        so the request does not spend a gRPC timeout on it.
+        """
+        down = await self.registry.down_addresses()
+        live = [node for node in nodes if node not in down]
+        skipped = [{"node": node, "error": "node is down"} for node in nodes if node in down]
+        return live, skipped
 
 
 def get_coordinator(connection: HTTPConnection) -> Coordinator:
@@ -330,17 +351,17 @@ async def health(c: CoordinatorDep) -> dict[str, Any]:
 
 @router.get("/membership/nodes")
 async def membership_nodes(c: CoordinatorDep) -> dict[str, Any]:
-    nodes = await c.registry.snapshot()
+    records = await c.registry.snapshot()
     return {
         "nodes": [
             {
-                "node_id": node.node_id,
-                "address": node.address,
-                "status": node.status,
-                "last_seen": node.last_seen,
-                "key_count": node.key_count,
+                "node_id": record.node_id,
+                "address": record.address,
+                "status": status,
+                "last_seen": record.last_seen,
+                "key_count": record.key_count,
             }
-            for node in nodes
+            for record, status in records
         ],
         "ring_version": await c.registry.ring_version(),
     }
@@ -357,7 +378,7 @@ async def membership_register(payload: dict[str, Any], c: CoordinatorDep) -> dic
     NODE_REGISTRATIONS.inc()
     return {
         "ring_version": ring_version,
-        "nodes": await c.registry.live_addresses(),
+        "nodes": await c.registry.ring_addresses(),
     }
 
 
@@ -372,16 +393,17 @@ async def membership_heartbeat(payload: dict[str, Any], c: CoordinatorDep) -> di
     ring_version = await c.registry.heartbeat(node_id=node_id, address=address, key_count=key_count)
     return {
         "ring_version": ring_version,
-        "nodes": await c.registry.live_addresses(),
+        "nodes": await c.registry.ring_addresses(),
     }
 
 
 @router.post("/membership/deregister")
 async def membership_deregister(payload: dict[str, Any], c: CoordinatorDep) -> dict[str, Any]:
-    node_id = payload.get("node_id")
-    if not node_id:
-        raise HTTPException(status_code=400, detail="Missing node_id")
-    ring_version = await c.registry.deregister(node_id=node_id)
+    # A node deregisters by address, the ring's identity; node_id is accepted for logging only.
+    address = payload.get("address")
+    if not address:
+        raise HTTPException(status_code=400, detail="Missing address")
+    ring_version = await c.registry.deregister(address=address)
     NODE_DEREGISTRATIONS.inc()
     return {"ring_version": ring_version}
 
@@ -394,10 +416,10 @@ async def membership_rebalance(payload: dict[str, Any], c: CoordinatorDep) -> di
     replicas_restored = int(payload.get("replicas_restored", 0))
     if not node_id:
         raise HTTPException(status_code=400, detail="Missing node_id")
-    REBALANCE_EVENTS.inc()
-    REBALANCE_DURATION.observe(duration_s)
+    REBALANCE_EVENTS.labels(node_id=node_id).inc()
+    REBALANCE_DURATION.labels(node_id=node_id).observe(duration_s)
     if replicas_restored:
-        REPLICA_RESTORES.inc(replicas_restored)
+        REPLICA_RESTORES.labels(node_id=node_id).inc(replicas_restored)
     c.recent_rebalances.append(
         {
             "node_id": node_id,
@@ -407,6 +429,8 @@ async def membership_rebalance(payload: dict[str, Any], c: CoordinatorDep) -> di
             "timestamp": time.time(),
         }
     )
+    # Bound the dashboard history so it does not grow without limit.
+    del c.recent_rebalances[:-50]
     return {"ok": True}
 
 
@@ -468,18 +492,22 @@ async def _read_vote(c: Coordinator, node: str, key: str) -> ReadReply:
 
 
 async def _read_quorum(
-    c: Coordinator, key: str, nodes: list[str], threshold: int
+    c: Coordinator,
+    key: str,
+    nodes: list[str],
+    threshold: int,
+    initial_errors: list[dict[str, str]],
 ) -> tuple[int, list[dict[str, str]], ReadReply | None, list[asyncio.Task[ReadReply]]]:
-    """Query all replicas in parallel; stop once `threshold` have responded.
+    """Query the live replicas in parallel; stop once `threshold` have responded.
 
-    A response is a value, a tombstone, or a miss; a failed RPC is not. Returns the response
-    count, the failed-vote errors, the highest-versioned entry seen (or None if every response
-    was a miss), and every vote task (so read repair can await the ones that answer late).
+    A response is a value, a tombstone, or a miss; a failed RPC (or a skipped down node) is not.
+    Returns the response count, the failed-vote errors, the highest-versioned entry seen (or None
+    if every response was a miss), and every vote task (so read repair can await late replies).
     """
     tasks = [asyncio.create_task(_read_vote(c, node, key)) for node in nodes]
     pending = set(tasks)
     responses = 0
-    errors: list[dict[str, str]] = []
+    errors: list[dict[str, str]] = list(initial_errors)
     best: ReadReply | None = None
     while pending:
         done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
@@ -504,9 +532,10 @@ async def get_key(key: str, c: CoordinatorDep) -> dict[str, Any] | JSONResponse:
     if not nodes:
         return _no_nodes("get", c.settings.read_quorum)
 
+    live, skipped = await c.live_and_down(nodes)
     threshold = min(c.settings.read_quorum, len(nodes))
     with LATENCY.labels(operation="get").time():
-        responses, errors, best, tasks = await _read_quorum(c, key, nodes, threshold)
+        responses, errors, best, tasks = await _read_quorum(c, key, live, threshold, skipped)
 
     if responses < threshold:
         # Too few replicas answered; the rest failed. Not a miss.
@@ -606,14 +635,16 @@ async def put_key(
     # One version and one expiry for every replica and every retry, assigned here.
     version = c.clock.tick()
     expires_at = _expires_at(_ttl_from(payload, c.settings.ttl_seconds))
+    live, skipped = await c.live_and_down(nodes)
     threshold = min(c.settings.write_quorum, len(nodes))
     with LATENCY.labels(operation="put").time():
         acks, errors = await _write_quorum(
             c,
             "put",
-            nodes,
+            live,
             lambda node: c.grpc_put(node, key, value.encode(), version, expires_at),
             threshold,
+            skipped,
         )
     if acks < threshold:
         return _unavailable("put", acks, c.settings.write_quorum, errors)
@@ -628,10 +659,16 @@ async def delete_key(key: str, c: CoordinatorDep) -> dict[str, Any] | JSONRespon
         return _no_nodes("delete", c.settings.write_quorum)
 
     version = c.clock.tick()
+    live, skipped = await c.live_and_down(nodes)
     threshold = min(c.settings.write_quorum, len(nodes))
     with LATENCY.labels(operation="delete").time():
         acks, errors = await _write_quorum(
-            c, "delete", nodes, lambda node: c.grpc_delete(node, key, version, 0.0), threshold
+            c,
+            "delete",
+            live,
+            lambda node: c.grpc_delete(node, key, version, 0.0),
+            threshold,
+            skipped,
         )
     if acks < threshold:
         return _unavailable("delete", acks, c.settings.write_quorum, errors)
@@ -661,11 +698,12 @@ async def _write_quorum(
     nodes: list[str],
     call: Callable[[str], Awaitable[Any]],
     threshold: int,
+    initial_errors: list[dict[str, str]],
 ) -> tuple[int, list[dict[str, str]]]:
-    """Fan a write out to all replicas; return once `threshold` ack, leaving the rest running."""
+    """Fan a write out to the live replicas; return once `threshold` ack, rest keep running."""
     pending = {asyncio.create_task(_write_vote(operation, node, call)) for node in nodes}
     acks = 0
-    errors: list[dict[str, str]] = []
+    errors: list[dict[str, str]] = list(initial_errors)
     while pending:
         done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
         for task in done:

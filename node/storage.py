@@ -192,6 +192,30 @@ class Storage:
             self._conn.commit()
             return cursor.rowcount > 0
 
+    async def delete_if_version(self, key: str, version: Version) -> bool:
+        """Compare-and-delete: remove the row only if its version is still `version`.
+
+        A client write that changed the row since it was read bumps the version, so this is a
+        no-op and the newer write survives the rebalance hand-off.
+        """
+        return await asyncio.to_thread(self._delete_if_version_sync, key, version)
+
+    def _delete_if_version_sync(self, key: str, version: Version) -> bool:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT version_ms, version_logical, version_coordinator "
+                "FROM cache_entries WHERE key = ?",
+                (key,),
+            ).fetchone()
+            if row is None:
+                return False
+            stored = (int(row[0]), int(row[1]), str(row[2]))
+            if stored != version:
+                return False  # changed since the snapshot; keep it
+            self._conn.execute("DELETE FROM cache_entries WHERE key = ?", (key,))
+            self._conn.commit()
+            return True
+
     async def count(self) -> int:
         return await asyncio.to_thread(self._count_sync)
 
