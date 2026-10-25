@@ -12,6 +12,7 @@ services:
       REPLICATION_FACTOR: 3
       STORAGE_PATH: /data/cache.db
       MAX_ITEMS: 1000
+      TOMBSTONE_GC_SECONDS: 3600
     healthcheck:
       test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('localhost',50051),1); s.close()"]
       interval: 5s
@@ -33,6 +34,7 @@ services:
       REPLICATION_FACTOR: 3
       STORAGE_PATH: /data/cache.db
       MAX_ITEMS: 1000
+      TOMBSTONE_GC_SECONDS: 3600
     healthcheck:
       test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('localhost',50051),1); s.close()"]
       interval: 5s
@@ -54,6 +56,7 @@ services:
       REPLICATION_FACTOR: 3
       STORAGE_PATH: /data/cache.db
       MAX_ITEMS: 1000
+      TOMBSTONE_GC_SECONDS: 3600
     healthcheck:
       test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('localhost',50051),1); s.close()"]
       interval: 5s
@@ -75,6 +78,7 @@ services:
       REPLICATION_FACTOR: 3
       STORAGE_PATH: /data/cache.db
       MAX_ITEMS: 1000
+      TOMBSTONE_GC_SECONDS: 3600
     healthcheck:
       test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('localhost',50051),1); s.close()"]
       interval: 5s
@@ -96,6 +100,7 @@ services:
       REPLICATION_FACTOR: 3
       STORAGE_PATH: /data/cache.db
       MAX_ITEMS: 1000
+      TOMBSTONE_GC_SECONDS: 3600
     healthcheck:
       test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('localhost',50051),1); s.close()"]
       interval: 5s
@@ -113,6 +118,7 @@ services:
       REPLICATION_FACTOR: 3
       READ_QUORUM: 2
       WRITE_QUORUM: 2
+      READ_REPAIR_ENABLED: "true"
       HEALTH_INTERVAL: 2.0
       HEARTBEAT_INTERVAL: 2.0
       HEARTBEAT_TIMEOUT: 6.0
