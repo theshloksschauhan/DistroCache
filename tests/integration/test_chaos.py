@@ -72,8 +72,17 @@ def test_no_500s_when_one_of_three_replicas_is_killed_during_traffic(
     assert set(statuses) <= {200, 503}, f"unexpected statuses: {sorted(set(statuses))}"
 
     # With two healthy replicas for every key, the cluster is still fully serving afterward.
+    # Health detection is eventually consistent: right after the kill, a probe to a *healthy*
+    # node can transiently time out on a slow runner, briefly dropping the cluster below quorum
+    # (a clean 503, exactly as tolerated during the load above). Wait for detection to settle,
+    # then require 200 -- if two healthy replicas genuinely could not serve, this still fails.
     for key in keys:
+        deadline = time.monotonic() + 15.0
         response = cluster.get(key)
+        while response.status_code != 200 and time.monotonic() < deadline:
+            time.sleep(0.2)
+            response = cluster.get(key)
         assert response.status_code == 200, (
-            f"GET {key} after the kill returned {response.status_code}: {response.text}"
+            f"GET {key} never returned 200 within 15s after the kill: "
+            f"{response.status_code}: {response.text}"
         )

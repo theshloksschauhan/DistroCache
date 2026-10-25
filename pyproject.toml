@@ -23,6 +23,13 @@ timeout = 300
 source = ["backend", "node", "distrocache_common"]
 omit = ["distrocache_common/generated/*"]
 
+[tool.coverage.report]
+# The unit run must keep unit line coverage at or above this. Set to the measured coverage
+# (75%) rounded down to the nearest 5. Raise it as coverage grows; never lower it. Integration
+# tests run as separate processes and are not counted here, so real exercised coverage is higher.
+fail_under = 75
+show_missing = true
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
