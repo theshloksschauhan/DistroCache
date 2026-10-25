@@ -7,7 +7,10 @@ Distributed key-value cache with consistent hashing, replication, and a real-tim
 ## Architecture
 - gRPC cache nodes handle reads/writes. Each node stores entries in its own SQLite file (WAL mode).
 - FastAPI backend routes requests using consistent hashing and tracks cluster health.
-- Nodes register and heartbeat with the backend, and rebalance replicas when membership changes.
+- Nodes register and heartbeat with the backend. Ring membership (which addresses own which keys)
+  is kept separate from liveness, so a short outage does not reshuffle ownership; a node is
+  removed from the ring only after a long `DEAD_TIMEOUT`, and only then do keys rebalance. A
+  rebalance hands a key off safely (compare-and-delete, confirmed by W new owners).
 - The coordinator stamps every write with a hybrid logical clock version and an absolute TTL, and
   replicas apply writes last-writer-wins, so a stale copy never overwrites a newer one.
 - Reads and writes use tunable quorums (N, R, W) with parallel fan-out: a write returns once W
@@ -130,7 +133,9 @@ API env vars:
 - `READ_REPAIR_ENABLED` whether a read repairs stale replicas in the background (default `true`).
 - `HEALTH_INTERVAL` for cluster polling interval.
 - `HEARTBEAT_INTERVAL` for membership pruning checks.
-- `HEARTBEAT_TIMEOUT` for marking nodes down.
+- `HEARTBEAT_TIMEOUT` liveness grace: a member with no heartbeat for this long is `suspect`.
+- `DEAD_TIMEOUT` ring grace: a member gone this long is removed from the ring (a rebalance), kept
+  well above `HEARTBEAT_TIMEOUT` so a short blip does not reshuffle ownership (default 30).
 - `REQUEST_TIMEOUT` gRPC request timeout in seconds.
 - `RETRY_ATTEMPTS` retry count for gRPC calls.
 - `RETRY_BACKOFF` base retry backoff in seconds.
@@ -146,6 +151,8 @@ Node env vars:
 - `GRPC_HOST` interface the gRPC server binds to (default `0.0.0.0`; use `127.0.0.1` for local-only).
 - `HEARTBEAT_INTERVAL` for node heartbeat frequency in seconds.
 - `REPLICATION_FACTOR` to align with the API replication factor.
+- `WRITE_QUORUM` new owners that must confirm a key before a rebalance drops the local copy
+  (align with the API `WRITE_QUORUM`; default 2).
 - `GRPC_TIMEOUT` gRPC timeout for replica transfers.
 - `STORAGE_PATH` to the SQLite file for persistence.
 - `MAX_ITEMS` to cap SQLite entries, evicting the least recently accessed (0 disables eviction).
@@ -160,8 +167,6 @@ Open correctness limitations. The ones with a reproducing test are marked `xfail
 - A delete can still resurrect if a replica is offline for longer than `TOMBSTONE_GC_SECONDS`
   (the tombstone is GC'd before that replica comes back). Tunable trade-off, documented in
   design record 0005.
-- Nodes listed in `NODE_ADDRESSES` get a second `seed-N` membership record that is later marked down.
-- A rebalance can delete a write that reaches a node while that node is handing the key off.
 - A single coordinator holds membership and routes every request.
 - No authentication or TLS on the HTTP API or between nodes.
 - No benchmarks yet.
