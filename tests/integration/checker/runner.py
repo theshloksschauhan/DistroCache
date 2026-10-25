@@ -35,7 +35,7 @@ from tests.integration.checker.workload import (  # noqa: E402
     Recorder,
     _parse_version,
 )
-from tests.integration.harness import Cluster  # noqa: E402
+from tests.integration.harness import Cluster, NodeHandle  # noqa: E402
 
 
 @dataclass
@@ -201,11 +201,11 @@ def run_checker(cfg: CheckerConfig) -> CheckerRun:
         for w in workers:
             w.join(timeout=20)
 
-        # Authoritative, quiet heal: with clients stopped, clean-restart every node so each
-        # coordinator gRPC channel is confirmed reconnected before convergence is judged (see
-        # _heal_all). Otherwise a node relaunched mid-run can be serving but unreachable over the
-        # coordinator's cached channel, and read repair would skip it (its vote errors).
-        _heal_all(cluster)
+        # Authoritative, quiet heal: with clients stopped, clean-restart the nodes that are
+        # behind (down or stale) so each one's coordinator gRPC channel is confirmed reconnected
+        # before convergence is judged. Only behind nodes need it (see _heal_behind), which keeps
+        # the heal — the slowest part on a loaded CI runner — proportional to the damage.
+        _heal_behind(cluster, keys)
         scan, passes, converged = _drive_convergence(cluster, keys, recorder, cfg.converge_passes)
 
         history = History(ops=list(recorder.ops), final_scan=scan)
@@ -222,17 +222,47 @@ def run_checker(cfg: CheckerConfig) -> CheckerRun:
         cluster.close(print_logs=False)
 
 
-def _heal_all(cluster: Cluster) -> None:
-    """Clean-restart every node, quietly (clients stopped), so convergence can be driven reliably.
+def _behind_nodes(cluster: Cluster, keys: list[str]) -> list[NodeHandle]:
+    """Nodes that are down or hold an older version than the newest seen for some key.
+
+    With N=3 on 3 nodes every node owns every key, so a node missing a key or holding an older
+    version than another node is genuinely behind. A current node needs no repair, so it is left
+    alone — only behind nodes are restarted during the heal.
+    """
+    # (handle, scan) pairs — NodeHandle is not hashable, so do not use it as a dict key.
+    scans: list[tuple[NodeHandle, dict[str, tuple[tuple[int, int, str], bool]] | None]] = []
+    for handle in cluster.nodes.values():
+        try:
+            scan = {k: v for k in keys if (v := cluster.node_scan(handle, k)) is not None}
+        except Exception:
+            scan = None  # unreachable right now
+        scans.append((handle, scan))
+    best: dict[str, tuple[int, int, str]] = {}
+    for key in keys:
+        versions = [s[key][0] for _, s in scans if s and key in s]
+        if versions:
+            best[key] = max(versions)
+    behind = []
+    for handle, scan in scans:
+        if scan is None or any(
+            key in best and (key not in scan or scan[key][0] < best[key]) for key in keys
+        ):
+            behind.append(handle)
+    return behind
+
+
+def _heal_behind(cluster: Cluster, keys: list[str]) -> None:
+    """Clean-restart the behind nodes (quietly, clients stopped) so convergence can be driven.
 
     A node relaunched mid-run can be *serving* yet unreachable over the coordinator's cached gRPC
-    channel; its read vote then errors and read repair skips it, so convergence would never
-    complete. ``cluster.restart`` waits for the coordinator to reach the node again, so restarting
-    every node confirms every channel is reconnected before the read pass. Data persists on disk
-    across the restart, so nothing is lost; the restarts run one at a time, so a quorum always
-    remains. Checking /health instead is not enough — it can report a cold channel as healthy.
+    channel; its read vote then errors and read repair skips it, so a stale replica would never
+    converge. ``cluster.restart`` waits for the coordinator to reach the node again, confirming the
+    channel. Data persists on disk across the restart, so nothing is lost; restarts run one at a
+    time, so a quorum always remains. Restarting only the behind nodes (usually one) keeps this —
+    the slowest step on a loaded runner — from dominating the run. Checking /health is not enough:
+    it can report a cold channel as healthy.
     """
-    for handle in list(cluster.nodes.values()):
+    for handle in _behind_nodes(cluster, keys):
         for _ in range(4):
             try:
                 if handle.process.running:
