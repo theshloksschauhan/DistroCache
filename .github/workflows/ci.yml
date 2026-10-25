@@ -147,6 +147,14 @@ jobs:
           grep -q 'distrocache_' /tmp/body
           expect 200 http://localhost:3000/
           expect 200 http://localhost:9090/-/ready
+          # Kill one node: with N=3, R=2, W=2 a quorum of two replicas still forms, so GET and
+          # POST keep returning 200. expect() retries, covering the coordinator's down-detection.
+          docker compose kill node2
+          expect 200 -X POST -H 'Content-Type: application/json' -d '{"value": "after-kill"}' \
+            http://localhost:8000/kv/kill-smoke
+          jq -e '.acks >= 2' /tmp/body
+          expect 200 http://localhost:8000/kv/kill-smoke
+          jq -e '.value == "after-kill"' /tmp/body
       - name: Diagnostics
         if: failure()
         run: |
