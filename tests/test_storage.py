@@ -4,10 +4,10 @@ import threading
 from pathlib import Path
 from types import TracebackType
 
-from node.storage import SCHEMA_VERSION, Storage, Version
+from node.storage import SCHEMA_VERSION, Entry, Storage
 
 
-def _value(entry: tuple[bytes, float | None, Version] | None) -> bytes | None:
+def _value(entry: Entry | None) -> bytes | None:
     return None if entry is None else entry[0]
 
 
@@ -68,6 +68,54 @@ def test_upsert_of_the_same_version_is_idempotent(tmp_path: Path) -> None:
     assert asyncio.run(storage.upsert("k", b"v", None, (5, 0, "c"))) is True
     assert asyncio.run(storage.upsert("k", b"v", None, (5, 0, "c"))) is False
     assert asyncio.run(storage.count()) == 1
+
+    storage.close()
+
+
+def test_delete_writes_a_tombstone_that_outranks_an_older_value(tmp_path: Path) -> None:
+    storage = Storage(str(tmp_path / "cache.db"))
+    asyncio.run(storage.initialize())
+
+    asyncio.run(storage.upsert("k", b"v", None, (1, 0, "c")))
+    # A tombstone with a higher version replaces the value; a read sees the tombstone.
+    assert asyncio.run(storage.upsert("k", b"", None, (2, 0, "c"), tombstone=True)) is True
+    entry = asyncio.run(storage.get("k"))
+    assert entry is not None and entry[3] is True  # tombstone flag
+    # An older value cannot resurrect it.
+    assert asyncio.run(storage.upsert("k", b"back", None, (1, 5, "c"))) is False
+    assert asyncio.run(storage.get("k"))[3] is True  # still a tombstone
+    # A newer value wins over the tombstone.
+    assert asyncio.run(storage.upsert("k", b"back", None, (3, 0, "c"))) is True
+    assert _value(asyncio.run(storage.get("k"))) == b"back"
+
+    storage.close()
+
+
+def test_tombstones_are_garbage_collected_after_the_window(tmp_path: Path) -> None:
+    storage = Storage(str(tmp_path / "cache.db"), tombstone_gc_seconds=0)
+    asyncio.run(storage.initialize())
+
+    asyncio.run(storage.upsert("k", b"", None, (1, 0, "c"), tombstone=True))
+    # gc window 0: the next write-time prune reclaims it, so a later write to the same key
+    # starts fresh rather than being out-ranked by the dead tombstone.
+    assert asyncio.run(storage.upsert("other", b"v", None, (1, 0, "c"))) is True
+    assert asyncio.run(storage.count()) == 1  # only "other"; the tombstone was GC'd
+
+    storage.close()
+
+
+def test_eviction_keeps_a_young_tombstone(tmp_path: Path) -> None:
+    # max_items forces eviction, but a tombstone inside its GC window must not be evicted.
+    storage = Storage(str(tmp_path / "cache.db"), max_items=1, tombstone_gc_seconds=3600)
+    asyncio.run(storage.initialize())
+
+    asyncio.run(storage.upsert("dead", b"", None, (1, 0, "c"), tombstone=True))
+    asyncio.run(storage.upsert("live1", b"a", None, (1, 0, "c")))
+    asyncio.run(storage.upsert("live2", b"b", None, (1, 0, "c")))
+
+    # Over max_items, but only live rows are evicted; the tombstone survives.
+    entry = asyncio.run(storage.get_entry("dead"))
+    assert entry is not None and entry[3] is True
 
     storage.close()
 

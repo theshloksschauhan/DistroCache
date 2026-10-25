@@ -48,6 +48,7 @@ class NodeConfig:
     grpc_timeout: float
     max_items: int
     storage_path: str
+    tombstone_gc_seconds: int
 
 
 def load_config() -> NodeConfig:
@@ -65,6 +66,7 @@ def load_config() -> NodeConfig:
         grpc_timeout=float(os.getenv("GRPC_TIMEOUT", "1.0")),
         max_items=int(os.getenv("MAX_ITEMS", "0")),
         storage_path=os.getenv("STORAGE_PATH", "cache.db"),
+        tombstone_gc_seconds=int(os.getenv("TOMBSTONE_GC_SECONDS", "3600")),
     )
 
 
@@ -79,9 +81,12 @@ class CacheNodeService(cache_pb2_grpc.CacheNodeServicer):
         entry = await self._storage.get(request.key)
         if entry is None:
             return cache_pb2.GetResponse(found=False)
-        value, expires_at, version = entry
+        value, expires_at, version, tombstone = entry
+        # A tombstone is reported with its version but found=False: the coordinator compares
+        # versions and treats a winning tombstone as a 404.
         return cache_pb2.GetResponse(
-            found=True,
+            found=not tombstone,
+            tombstone=tombstone,
             value=value,
             version=_version_proto(version),
             expires_at=expires_at or 0.0,
@@ -104,13 +109,17 @@ class CacheNodeService(cache_pb2_grpc.CacheNodeServicer):
     async def Delete(
         self, request: cache_pb2.DeleteRequest, context: grpc.aio.ServicerContext
     ) -> cache_pb2.DeleteResponse:
-        # Stage 3 still removes the row; the delete-resurrection bug keeps its xfail until
-        # Stage 5 writes a tombstone. The version already travels so only behaviour changes then.
+        # A delete is a versioned tombstone, not a removal, so a replica that missed it cannot
+        # resurrect the value: the tombstone's higher version wins last-writer-wins.
         try:
-            removed = await self._storage.delete(request.key)
-            # A replica that did not hold the key is already in the deleted state, so an absent
-            # row acks the delete too (ALREADY_CURRENT) rather than failing the vote.
-            return cache_pb2.DeleteResponse(status=_write_status(removed))
+            applied = await self._storage.upsert(
+                request.key,
+                b"",
+                None,
+                _version_tuple(request.version),
+                tombstone=True,
+            )
+            return cache_pb2.DeleteResponse(status=_write_status(applied))
         except Exception as exc:
             return cache_pb2.DeleteResponse(status=cache_pb2.WriteStatus.ERROR, error=str(exc))
 
@@ -120,13 +129,14 @@ class CacheNodeService(cache_pb2_grpc.CacheNodeServicer):
         entries = await self._storage.list_entries()
         include_values = request.include_values
         response_entries = []
-        for key, value, expires_at, version in entries:
+        for key, value, expires_at, version, tombstone in entries:
             response_entries.append(
                 cache_pb2.Entry(
                     key=key,
                     value=value if include_values else b"",
                     expires_at=expires_at or 0.0,
                     version=_version_proto(version),
+                    tombstone=tombstone,
                 )
             )
         return cache_pb2.ListEntriesResponse(entries=response_entries)
@@ -137,7 +147,7 @@ class CacheNodeService(cache_pb2_grpc.CacheNodeServicer):
         entry = await self._storage.get_entry(request.key)
         if entry is None:
             return cache_pb2.GetEntryResponse(found=False)
-        value, expires_at, version = entry
+        value, expires_at, version, tombstone = entry
         return cache_pb2.GetEntryResponse(
             found=True,
             entry=cache_pb2.Entry(
@@ -145,6 +155,7 @@ class CacheNodeService(cache_pb2_grpc.CacheNodeServicer):
                 value=value,
                 expires_at=expires_at or 0.0,
                 version=_version_proto(version),
+                tombstone=tombstone,
             ),
         )
 
@@ -157,6 +168,7 @@ class CacheNodeService(cache_pb2_grpc.CacheNodeServicer):
                 request.value,
                 request.expires_at if request.expires_at > 0 else None,
                 _version_tuple(request.version),
+                tombstone=request.tombstone,
             )
             return cache_pb2.PutReplicaResponse(status=_write_status(applied))
         except Exception as exc:
@@ -184,6 +196,7 @@ class Node:
         self.storage = Storage(
             db_path=config.storage_path,
             max_items=config.max_items if config.max_items > 0 else None,
+            tombstone_gc_seconds=config.tombstone_gc_seconds,
         )
         self.membership = MembershipClient(config.backend_url, config.node_id, config.node_address)
         self.client_pool = client_pool or GrpcClientPool()
@@ -271,7 +284,7 @@ class Node:
         entries = await self.storage.list_entries()
         keys_moved = 0
         replicas_restored = 0
-        for key, value, expires_at, version in entries:
+        for key, value, expires_at, version, tombstone in entries:
             replicas = ring.get_nodes(key, self.config.replication_factor)
             if not replicas:
                 continue
@@ -287,6 +300,7 @@ class Node:
                             value=value,
                             expires_at=expires_at or 0.0,
                             version=_version_proto(version),
+                            tombstone=tombstone,
                         ),
                         timeout=self.config.grpc_timeout,
                     )

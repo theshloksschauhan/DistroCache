@@ -91,6 +91,7 @@ def _coordinator_for(
 ) -> Coordinator:
     # No lifespan here, so the health loop never dials these addresses. R/W default to a valid
     # quorum for the given N (so a single-replica test is not rejected by the N/R/W validation).
+    # Read repair is off: these tests exercise error handling, and repair is covered separately.
     default_quorum = min(2, replication_factor)
     app = create_app(
         Settings(
@@ -98,6 +99,7 @@ def _coordinator_for(
             replication_factor=replication_factor,
             read_quorum=read_quorum if read_quorum is not None else default_quorum,
             write_quorum=write_quorum if write_quorum is not None else default_quorum,
+            read_repair_enabled=False,
             retry_attempts=2,
             retry_backoff=0,
         )
@@ -106,18 +108,31 @@ def _coordinator_for(
     return coordinator
 
 
-def _invoke(coro: object) -> tuple[int, dict[str, object]]:
-    """Run a route. An escaped replica error fails the test instead of counting as the bug."""
+def _invoke(coordinator: Coordinator, coro: object) -> tuple[int, dict[str, object]]:
+    """Run a route to completion, draining the detached fan-out tasks it leaves behind.
+
+    An escaped replica error fails the test instead of counting as the bug.
+    """
+
+    async def run() -> tuple[int, dict[str, object]]:
+        try:
+            result = await coro  # type: ignore[misc]
+            if isinstance(result, JSONResponse):
+                status, body = result.status_code, json.loads(bytes(result.body))
+            else:
+                status, body = 200, result
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else {"detail": exc.detail}
+            status, body = exc.status_code, detail
+        finally:
+            if coordinator._background:
+                await asyncio.gather(*coordinator._background, return_exceptions=True)
+        return status, body
+
     try:
-        result = asyncio.run(coro)  # type: ignore[arg-type]
-    except HTTPException as exc:
-        detail = exc.detail if isinstance(exc.detail, dict) else {"detail": exc.detail}
-        return exc.status_code, detail
+        return asyncio.run(run())
     except Exception as exc:
         raise AssertionError(f"request raised {type(exc).__name__}: {exc}") from exc
-    if isinstance(result, JSONResponse):
-        return result.status_code, json.loads(bytes(result.body))
-    return 200, result
 
 
 @pytest.mark.parametrize("method", ["grpc_get", "grpc_put"])
@@ -153,7 +168,7 @@ def test_get_still_returns_a_value_when_one_replica_errors() -> None:
         )
 
     coordinator.grpc_get = fake_get  # type: ignore[method-assign]
-    status, body = _invoke(get_key("k", coordinator))
+    status, body = _invoke(coordinator, get_key("k", coordinator))
 
     assert status == 200, body
     assert body["value"] == "v1"
@@ -169,7 +184,7 @@ def test_no_acks_is_503_and_counts_one_unavailable_failure() -> None:
 
     coordinator.grpc_get = fake_get  # type: ignore[method-assign]
     before = _failures("get", reason="unavailable")
-    status, body = _invoke(get_key("k", coordinator))
+    status, body = _invoke(coordinator, get_key("k", coordinator))
     after = _failures("get", reason="unavailable")
 
     assert status == 503, body
@@ -188,7 +203,7 @@ def test_get_miss_does_not_count_as_a_request_failure() -> None:
 
     coordinator.grpc_get = missing  # type: ignore[method-assign]
     before = _failures("get")
-    status, _body = _invoke(get_key("missing", coordinator))
+    status, _body = _invoke(coordinator, get_key("missing", coordinator))
     after = _failures("get")
 
     assert status == 404
@@ -204,7 +219,7 @@ def test_rejected_write_is_a_failed_vote() -> None:
         return cache_pb2.PutResponse(status=cache_pb2.WriteStatus.ERROR, error="disk full")
 
     coordinator.grpc_put = rejected  # type: ignore[method-assign]
-    status, body = _invoke(put_key("k", {"value": "v"}, coordinator))
+    status, body = _invoke(coordinator, put_key("k", {"value": "v"}, coordinator))
 
     assert status == 503, body
     assert body.get("acks") == 0
@@ -248,7 +263,7 @@ def test_corrupt_value_counts_as_an_internal_failure() -> None:
 
     coordinator.grpc_get = corrupt  # type: ignore[method-assign]
     before = _failures("get", reason="internal")
-    status, body = _invoke(get_key("k", coordinator))
+    status, body = _invoke(coordinator, get_key("k", coordinator))
 
     assert status == 500, body
     assert _failures("get", reason="internal") == before + 1
@@ -257,7 +272,7 @@ def test_corrupt_value_counts_as_an_internal_failure() -> None:
 def test_no_nodes_is_503_with_the_vote_body() -> None:
     coordinator = _coordinator_for()
     before = _failures("put", reason="unavailable")
-    status, body = _invoke(put_key("k", {"value": "v"}, coordinator))
+    status, body = _invoke(coordinator, put_key("k", {"value": "v"}, coordinator))
 
     assert status == 503, body
     assert body.get("acks") == 0
@@ -276,7 +291,7 @@ def test_failed_vote_is_logged(caplog: pytest.LogCaptureFixture) -> None:
 
     coordinator.grpc_put = down  # type: ignore[method-assign]
     caplog.set_level(logging.WARNING, logger="distrocache.api")
-    _invoke(put_key("k", {"value": "v"}, coordinator))
+    _invoke(coordinator, put_key("k", {"value": "v"}, coordinator))
 
     assert any(
         r.levelno == logging.WARNING and "127.0.0.1:9" in r.message and "unreachable" in r.message

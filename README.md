@@ -12,6 +12,9 @@ Distributed key-value cache with consistent hashing, replication, and a real-tim
   replicas apply writes last-writer-wins, so a stale copy never overwrites a newer one.
 - Reads and writes use tunable quorums (N, R, W) with parallel fan-out: a write returns once W
   replicas ack, a read once R respond and returns the highest version seen.
+- A delete writes a versioned tombstone (kept for `TOMBSTONE_GC_SECONDS`), so a replica that
+  missed it cannot resurrect the value. After a read, read repair pushes the winning version
+  (value or tombstone) to any replica that answered stale or missing.
 - React dashboard receives cluster updates over a WebSocket and also polls `/health` (every 3 s) and `/membership/nodes` (every 5 s).
 - Prometheus scrapes backend metrics.
 - `distrocache_common/` holds the hash ring, gRPC client pool, and generated protobuf stubs shared by the backend and nodes.
@@ -92,7 +95,7 @@ python scripts/gen_proto.py
 - `POST /kv/{key}` with JSON `{ "value": "...", "ttl_seconds": 60 }` (`ttl_seconds` optional;
   falls back to the coordinator's `TTL_SECONDS`) — 200 `{key, replicas, acks, version}` once W
   replicas ack, 503 otherwise.
-- `DELETE /kv/{key}` — same quorum and body shape as `POST`.
+- `DELETE /kv/{key}` — writes a tombstone under the same quorum and body shape as `POST`.
 - `GET /health`
 - `GET /membership/nodes`
 - `POST /membership/register`
@@ -124,6 +127,7 @@ API env vars:
 - `READ_QUORUM` (R) replicas that must respond to a read (default 2; `1 <= R <= N`).
 - `WRITE_QUORUM` (W) replicas that must ack a write (default 2; `1 <= W <= N`). `R + W > N`
   gives read-your-writes.
+- `READ_REPAIR_ENABLED` whether a read repairs stale replicas in the background (default `true`).
 - `HEALTH_INTERVAL` for cluster polling interval.
 - `HEARTBEAT_INTERVAL` for membership pruning checks.
 - `HEARTBEAT_TIMEOUT` for marking nodes down.
@@ -145,6 +149,7 @@ Node env vars:
 - `GRPC_TIMEOUT` gRPC timeout for replica transfers.
 - `STORAGE_PATH` to the SQLite file for persistence.
 - `MAX_ITEMS` to cap SQLite entries, evicting the least recently accessed (0 disables eviction).
+- `TOMBSTONE_GC_SECONDS` how long a delete's tombstone is kept before it is purged (default 3600).
 
 Frontend:
 - `VITE_API_URL` to the API base URL (build-time).
@@ -152,7 +157,9 @@ Frontend:
 ## Known limitations (being addressed)
 Open correctness limitations. The ones with a reproducing test are marked `xfail` in `tests/`.
 
-- Deletes leave no tombstones, so a replica that missed a delete can still serve the deleted value.
+- A delete can still resurrect if a replica is offline for longer than `TOMBSTONE_GC_SECONDS`
+  (the tombstone is GC'd before that replica comes back). Tunable trade-off, documented in
+  design record 0005.
 - Nodes listed in `NODE_ADDRESSES` get a second `seed-N` membership record that is later marked down.
 - A rebalance can delete a write that reaches a node while that node is handing the key off.
 - A single coordinator holds membership and routes every request.

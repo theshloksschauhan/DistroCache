@@ -140,6 +140,9 @@ jobs:
           expect 200 http://localhost:8000/kv/ci-smoke
           jq -e '.value == "ok"' /tmp/body
           expect 404 http://localhost:8000/kv/does-not-exist
+          # A delete writes a tombstone, so the key reads as 404 afterwards.
+          expect 200 -X DELETE http://localhost:8000/kv/ci-smoke
+          expect 404 http://localhost:8000/kv/ci-smoke
           expect 200 http://localhost:8000/metrics
           grep -q 'distrocache_' /tmp/body
           expect 200 http://localhost:3000/

@@ -23,11 +23,12 @@ message GetRequest {
 }
 
 message GetResponse {
-  bool found = 1;
+  bool found = 1;       // the replica holds a live value
   bytes value = 2;
   string error = 3;
   Version version = 4;
   double expires_at = 5;
+  bool tombstone = 6;   // the replica holds a tombstone at `version` (a delete)
 }
 
 message PutRequest {
@@ -58,6 +59,7 @@ message Entry {
   bytes value = 2;
   double expires_at = 3;
   Version version = 4;
+  bool tombstone = 5;
 }
 
 message ListEntriesRequest {
@@ -83,6 +85,7 @@ message PutReplicaRequest {
   bytes value = 2;
   double expires_at = 3;
   Version version = 4;
+  bool tombstone = 5;
 }
 
 message PutReplicaResponse {

@@ -52,6 +52,10 @@ REBALANCE_DURATION = Histogram(
     "distrocache_rebalance_duration_seconds",
     "Rebalance duration in seconds",
 )
+READ_REPAIRS = Counter(
+    "distrocache_read_repairs_total",
+    "Replicas repaired to the winning version after a read",
+)
 REBALANCE_EVENTS = Counter(
     "distrocache_rebalance_events_total",
     "Rebalance events",

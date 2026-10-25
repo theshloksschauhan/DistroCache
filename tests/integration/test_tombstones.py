@@ -13,11 +13,6 @@ pytestmark = pytest.mark.integration
 ClusterFactory = Callable[..., Cluster]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="Stage 5: delete removes rows instead of writing tombstones, so a missed delete returns",
-)
 def test_delete_is_not_undone_by_a_replica_that_missed_it(cluster_factory: ClusterFactory) -> None:
     cluster = cluster_factory(nodes=3, heartbeat_timeout=60)
     key = "deleted"
