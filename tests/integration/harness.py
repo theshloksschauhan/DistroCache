@@ -28,6 +28,7 @@ import httpx
 
 from distrocache_common.generated import cache_pb2, cache_pb2_grpc
 from distrocache_common.hashing import ConsistentHashRing
+from tests.integration.winjob import place_in_kill_on_close_job
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 IS_WINDOWS = sys.platform == "win32"
@@ -180,6 +181,9 @@ class Process:
             creationflags=flags,
         )
         _live_processes.add(self.popen)
+        # On Windows, also put the child in a kill-on-close Job Object so a pytest-timeout
+        # os._exit (which skips the atexit cleanup above) still cannot orphan it. No-op elsewhere.
+        place_in_kill_on_close_job(self.popen)
 
     def kill(self) -> None:
         """Hard kill: no shutdown code runs, like a crash or power loss."""
