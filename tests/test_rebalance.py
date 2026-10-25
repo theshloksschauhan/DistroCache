@@ -47,6 +47,7 @@ def _config(tmp_path: Path) -> NodeConfig:
         grpc_timeout=0.5,
         max_items=0,
         storage_path=str(tmp_path / "cache.db"),
+        tombstone_gc_seconds=3600,
     )
 
 

@@ -31,6 +31,7 @@ from .metrics import (
     NODE_DEREGISTRATIONS,
     NODE_REGISTRATIONS,
     NODE_STATUS,
+    READ_REPAIRS,
     REBALANCE_DURATION,
     REBALANCE_EVENTS,
     REPLICA_RESTORES,
@@ -113,6 +114,7 @@ class Settings:
     retry_backoff: float = 0.1
     read_quorum: int = 2
     write_quorum: int = 2
+    read_repair_enabled: bool = True
     ttl_seconds: int = 0
     coordinator_id: str = "coordinator"
     cors_origins: tuple[str, ...] = ("http://localhost:3000", "http://localhost:5173")
@@ -137,6 +139,7 @@ def load_settings() -> Settings:
         retry_backoff=float(os.getenv("RETRY_BACKOFF", "0.1")),
         read_quorum=int(os.getenv("READ_QUORUM", "2")),
         write_quorum=int(os.getenv("WRITE_QUORUM", "2")),
+        read_repair_enabled=os.getenv("READ_REPAIR_ENABLED", "true").lower() != "false",
         ttl_seconds=int(os.getenv("TTL_SECONDS", "0")),
         coordinator_id=os.getenv("COORDINATOR_ID", "coordinator"),
         cors_origins=cors_origins,
@@ -284,6 +287,27 @@ class Coordinator:
         )
         return await self._rpc(node, "Delete", request)
 
+    async def grpc_put_replica(
+        self,
+        node: str,
+        key: str,
+        value: bytes,
+        expires_at: float,
+        version: NodeVersion,
+        tombstone: bool,
+    ) -> cache_pb2.PutReplicaResponse:
+        """Push one version (value or tombstone) to a replica; used by read repair."""
+        request = cache_pb2.PutReplicaRequest(
+            key=key,
+            value=value,
+            expires_at=expires_at,
+            version=cache_pb2.Version(
+                physical_ms=version[0], logical=version[1], coordinator_id=version[2]
+            ),
+            tombstone=tombstone,
+        )
+        return await self._rpc(node, "PutReplica", request)
+
     async def replicas_for(self, key: str) -> list[str]:
         nodes = await self.registry.live_addresses()
         return ConsistentHashRing(nodes).get_nodes(key, self.settings.replication_factor)
@@ -405,52 +429,72 @@ def _no_nodes(operation: str, required: int) -> JSONResponse:
     return _unavailable(operation, acks=0, required=required, errors=[])
 
 
-# One replica's reply to a read: ("found", node, None, version, value) with a value,
-# ("miss", node, None, None, None) for a key the replica does not hold, or
-# ("error", node, text, None, None) for a failed RPC. It never raises, so a detached
-# vote left running past the quorum cannot produce an unretrieved exception.
-ReadVote = tuple[str, str, str | None, NodeVersion | None, bytes | None]
+@dataclass
+class ReadReply:
+    """One replica's reply to a read. kind is 'found', 'tombstone', 'miss', or 'error'.
+
+    _read_vote never raises, so a vote left running past the quorum (and awaited later by read
+    repair) cannot produce an unretrieved exception.
+    """
+
+    node: str
+    kind: str
+    version: NodeVersion | None = None
+    value: bytes = b""
+    expires_at: float = 0.0
+    error: str | None = None
+
+    @property
+    def is_entry(self) -> bool:
+        """True when the reply carries a versioned entry (a value or a tombstone)."""
+        return self.kind in ("found", "tombstone") and self.version is not None
 
 
-async def _read_vote(c: Coordinator, node: str, key: str) -> ReadVote:
+async def _read_vote(c: Coordinator, node: str, key: str) -> ReadReply:
     try:
         response = await c.grpc_get(node, key)
     except Exception as exc:
-        return ("error", node, rpc_error_text(exc), None, None)
-    if response.found:
-        v = response.version
-        return ("found", node, None, (v.physical_ms, v.logical, v.coordinator_id), response.value)
-    return ("miss", node, None, None, None)
+        return ReadReply(node=node, kind="error", error=rpc_error_text(exc))
+    if not response.found and not response.tombstone:
+        return ReadReply(node=node, kind="miss")
+    v = response.version
+    return ReadReply(
+        node=node,
+        kind="tombstone" if response.tombstone else "found",
+        version=(v.physical_ms, v.logical, v.coordinator_id),
+        value=response.value,
+        expires_at=response.expires_at,
+    )
 
 
 async def _read_quorum(
     c: Coordinator, key: str, nodes: list[str], threshold: int
-) -> tuple[int, list[dict[str, str]], tuple[NodeVersion, bytes, str] | None]:
+) -> tuple[int, list[dict[str, str]], ReadReply | None, list[asyncio.Task[ReadReply]]]:
     """Query all replicas in parallel; stop once `threshold` have responded.
 
-    A response is a value or a miss; a failed RPC is not. Returns the number of responses, the
-    failed-vote errors, and the highest-versioned value seen (or None if every response missed).
+    A response is a value, a tombstone, or a miss; a failed RPC is not. Returns the response
+    count, the failed-vote errors, the highest-versioned entry seen (or None if every response
+    was a miss), and every vote task (so read repair can await the ones that answer late).
     """
-    pending = {asyncio.create_task(_read_vote(c, node, key)) for node in nodes}
+    tasks = [asyncio.create_task(_read_vote(c, node, key)) for node in nodes]
+    pending = set(tasks)
     responses = 0
     errors: list[dict[str, str]] = []
-    best: tuple[NodeVersion, bytes, str] | None = None
+    best: ReadReply | None = None
     while pending:
         done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
-            kind, node, error, version, value = task.result()
-            if kind == "error":
-                errors.append({"node": node, "error": error or "read error"})
-                logger.warning("get on %s failed: %s", node, error)
+            reply = task.result()
+            if reply.kind == "error":
+                errors.append({"node": reply.node, "error": reply.error or "read error"})
+                logger.warning("get on %s failed: %s", reply.node, reply.error)
                 continue
             responses += 1
-            if kind == "found" and version is not None and value is not None:
-                if best is None or version > best[0]:
-                    best = (version, value, node)
+            if reply.is_entry and (best is None or reply.version > best.version):  # type: ignore[operator]
+                best = reply
         if responses >= threshold:
             break
-    c.detach(pending)  # late responses are ignored this stage; Stage 6 repairs from them
-    return responses, errors, best
+    return responses, errors, best, tasks
 
 
 @router.get("/kv/{key}", response_model=None)
@@ -462,17 +506,28 @@ async def get_key(key: str, c: CoordinatorDep) -> dict[str, Any] | JSONResponse:
 
     threshold = min(c.settings.read_quorum, len(nodes))
     with LATENCY.labels(operation="get").time():
-        responses, errors, best = await _read_quorum(c, key, nodes, threshold)
+        responses, errors, best, tasks = await _read_quorum(c, key, nodes, threshold)
 
     if responses < threshold:
         # Too few replicas answered; the rest failed. Not a miss.
+        c.detach(set(tasks))
         return _unavailable("get", responses, c.settings.read_quorum, errors)
     if best is None:
+        # Every responding replica missed: a genuine 404.
+        c.detach(set(tasks))
         MISS_COUNT.labels(operation="get").inc()
         raise HTTPException(status_code=404, detail="Key not found")
-    version, value_bytes, node = best
+
+    # There is a winning entry (value or tombstone); converge the stale replicas in the
+    # background, awaiting even the replies that land after the quorum.
+    _schedule_read_repair(c, key, best, tasks)
+
+    if best.kind == "tombstone":
+        # The highest version says the key was deleted.
+        MISS_COUNT.labels(operation="get").inc()
+        raise HTTPException(status_code=404, detail="Key not found")
     try:
-        value = value_bytes.decode("utf-8")
+        value = best.value.decode("utf-8")
     except UnicodeDecodeError:
         REQUEST_FAILURES.labels(operation="get", reason="internal").inc()
         raise HTTPException(status_code=500, detail="Stored value is not valid UTF-8") from None
@@ -480,10 +535,50 @@ async def get_key(key: str, c: CoordinatorDep) -> dict[str, Any] | JSONResponse:
     return {
         "key": key,
         "value": value,
-        "node": node,
+        "node": best.node,
         "acks": responses,
-        "version": _version_dict(version),
+        "version": _version_dict(best.version),  # type: ignore[arg-type]
     }
+
+
+def _schedule_read_repair(
+    c: Coordinator, key: str, winner: ReadReply, tasks: list[asyncio.Task[ReadReply]]
+) -> None:
+    """Repair stale replicas in the background, or just let the vote tasks finish if disabled."""
+    if c.settings.read_repair_enabled:
+        c.detach({asyncio.create_task(_read_repair(c, key, winner, tasks))})
+    else:
+        c.detach(set(tasks))
+
+
+async def _read_repair(
+    c: Coordinator, key: str, winner: ReadReply, tasks: list[asyncio.Task[ReadReply]]
+) -> None:
+    """Push the winning version to every replica that answered older or with a miss."""
+    replies = await asyncio.gather(*tasks)
+    # A late reply may carry an even newer version than the quorum winner; converge on the max.
+    best = winner
+    for reply in replies:
+        if reply.is_entry and reply.version > best.version:  # type: ignore[operator]
+            best = reply
+    assert best.version is not None
+    for reply in replies:
+        if reply.kind == "error" or reply.node == best.node:
+            continue
+        if reply.version is not None and reply.version >= best.version:
+            continue  # already current or newer
+        try:
+            await c.grpc_put_replica(
+                reply.node,
+                key,
+                best.value,
+                best.expires_at,
+                best.version,
+                best.kind == "tombstone",
+            )
+            READ_REPAIRS.inc()
+        except Exception as exc:
+            logger.warning("read repair of %s on %s failed: %s", key, reply.node, exc)
 
 
 def _expires_at(ttl_seconds: int) -> float:
