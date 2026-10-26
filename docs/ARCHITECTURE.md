@@ -50,6 +50,13 @@ Because a single coordinator serializes `clock.tick()`, every write gets a uniqu
 increasing version with no clock sync between nodes. Everything compares these tuples:
 **last-writer-wins** is "highest version wins." See [0003](design/0003-versions-and-ttl.md).
 
+**Caveat — monotonicity holds within one coordinator process.** `HybridClock` starts `_last_ms`
+at 0 and does not persist it across restarts (`distrocache_common/hlc.py`). If the wall clock moves
+backward across a coordinator restart (for example an NTP step correction), a write minted after
+the restart can carry a version *lower* than versions already stored on the nodes; last-writer-wins
+then treats the newer write as older and the replicas reject it. This is a known gap, tracked as
+future work (persist the last stamp, or seed the clock from a quorum read on startup).
+
 ## Quorums (N, R, W)
 
 `N` replicas per key; a read needs `R` responses, a write needs `W` acks. With **R + W > N** the
