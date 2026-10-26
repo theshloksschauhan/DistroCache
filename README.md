@@ -9,6 +9,16 @@ wins, **tombstones** for deletes, **read repair**, and **safe rebalance** when t
 `R + W > N` it gives read-your-writes for acknowledged writes; it ships with a real-process
 integration harness, a Jepsen-style consistency checker, and benchmarks.
 
+## Demo
+
+![DistroCache dashboard: five healthy nodes, node3 crashed while reads succeed, node3 rejoins](docs/demo/distrocache-demo.gif)
+
+The recording is the real five-node cluster from `docker compose up --build`, captured from the dashboard once a second ([MP4](docs/demo/distrocache-demo.mp4)).
+It writes and reads `greeting`, crashes node3 with `docker compose kill node3` (the read still returns 200 from the surviving replicas), then restarts node3 and shows it rejoin and report a rebalance.
+Reproduce it locally with `docker compose up --build -d`, then `python scripts/record_demo.py` (needs Playwright and ffmpeg), then `docker compose down`.
+
+The hosted dashboard at [distrocache-frontend.vercel.app](https://distrocache-frontend.vercel.app) has no cluster attached and shows no nodes: the cache nodes are long-running gRPC servers, which Vercel cannot host.
+
 ## Architecture
 
 ```mermaid
