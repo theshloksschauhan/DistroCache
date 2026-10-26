@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 
 const DEFAULT_API = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const DEMO_URL = "https://github.com/theshloksschauhan/DistroCache#demo";
 
 const statusLabel = (ok) => (ok ? "Healthy" : "Unreachable");
 
@@ -10,6 +11,7 @@ export default function App() {
   const [membership, setMembership] = useState([]);
   const [ringVersion, setRingVersion] = useState(0);
   const [rebalances, setRebalances] = useState([]);
+  const [noCluster, setNoCluster] = useState(false);
   const apiUrl = useMemo(() => DEFAULT_API, []);
 
   useEffect(() => {
@@ -24,6 +26,7 @@ export default function App() {
         const data = await response.json();
         if (!isMounted) return;
         setNodes(data.nodes || {});
+        setNoCluster(Object.keys(data.nodes || {}).length === 0);
         setLastUpdate(new Date());
       } catch (error) {
         return;
@@ -82,6 +85,16 @@ export default function App() {
 
   return (
     <div className="app">
+      {noCluster && (
+        <div className="notice" role="status">
+          This hosted dashboard has no cluster attached. The cache nodes are long-running gRPC
+          servers that Vercel cannot host. Watch the{" "}
+          <a href={DEMO_URL} target="_blank" rel="noreferrer">
+            recorded demo
+          </a>{" "}
+          or run <code>docker compose up</code> locally.
+        </div>
+      )}
       <header className="hero">
         <div>
           <p className="eyebrow">DistroCache</p>

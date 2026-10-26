@@ -20,6 +20,26 @@ body {
   padding: 48px 8vw 64px;
 }
 
+.notice {
+  margin-bottom: 24px;
+  padding: 16px 20px;
+  background: #fff1c9;
+  border: 2px solid #11110e;
+  border-radius: 16px;
+  box-shadow: 6px 6px 0 #11110e;
+  line-height: 1.6;
+}
+
+.notice a {
+  color: inherit;
+  font-weight: 700;
+}
+
+.notice code {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.9em;
+}
+
 .hero {
   display: flex;
   flex-wrap: wrap;
