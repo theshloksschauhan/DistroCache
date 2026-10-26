@@ -280,3 +280,23 @@ def test_run_all_is_not_clean_when_any_check_fails() -> None:
     report = checks.run_all(h)
     assert not report.ok
     assert any("read-your-writes" in r.name for r in report.failed())
+
+
+# --- the runnable entry point: never exit 0 without a verdict -----------------------------------
+
+
+def test_main_exits_nonzero_without_a_false_verdict_on_run_error(monkeypatch, capsys) -> None:
+    """If the run itself fails, ``main`` must exit non-zero and must NOT print a CLEAN or VIOLATIONS
+    verdict, so an aborted run can never be mistaken for a clean "no violations" result."""
+    from tests.integration.checker import runner
+
+    def boom(_cfg: object) -> object:
+        raise RuntimeError("cluster could not start")
+
+    monkeypatch.setattr(runner, "run_checker", boom)
+    code = runner.main(["--duration", "0"])
+    out = capsys.readouterr().out
+    assert code != 0
+    assert "REPORT: CLEAN" not in out
+    assert "REPORT: VIOLATIONS FOUND" not in out
+    assert "REPORT: ERROR" in out  # the run always ends on an explicit verdict line
