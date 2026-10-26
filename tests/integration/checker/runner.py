@@ -75,17 +75,37 @@ def _coordinator_env(cfg: CheckerConfig) -> dict[str, str]:
     }
 
 
+def _read_repairs_metric(cluster: Cluster, retries: int = 5, backoff: float = 0.2) -> float | None:
+    """Read the read-repair counter, tolerating a transient connection error.
+
+    The nemesis kills nodes throughout the run, so a ``/metrics`` poll can land in the brief window
+    where the coordinator is resetting a just-killed node's gRPC channel and momentarily refuses or
+    drops the HTTP connection. That is a timing blip, not a consistency signal, so retry a few times
+    and return ``None`` ("could not read") rather than let an ``httpx`` error escape and abort the
+    run with a traceback. The caller treats ``None`` as "no new reading" and tries again.
+    """
+    for attempt in range(retries):
+        try:
+            return cluster.metric("distrocache_read_repairs_total")
+        except httpx.HTTPError:
+            if attempt < retries - 1:
+                time.sleep(backoff)
+    return None
+
+
 def _wait_read_repairs_quiesce(cluster: Cluster, timeout: float = 10.0) -> None:
     """Wait until the read-repair counter stops moving, so the final scan sees a settled cluster."""
     deadline = time.monotonic() + timeout
-    last = cluster.metric("distrocache_read_repairs_total")
+    last = _read_repairs_metric(cluster)
     stable_since = time.monotonic()
     while time.monotonic() < deadline:
         time.sleep(0.2)
-        current = cluster.metric("distrocache_read_repairs_total")
+        current = _read_repairs_metric(cluster)
+        if current is None:
+            continue  # transient read failure; retry without resetting the window
         if current != last:
             last, stable_since = current, time.monotonic()
-        elif time.monotonic() - stable_since >= 1.0:
+        elif last is not None and time.monotonic() - stable_since >= 1.0:
             return
 
 
@@ -307,7 +327,14 @@ def main(argv: list[str] | None = None) -> int:
         f"Running checker: N={n} R={r} W={w} duration={cfg.duration}s "
         f"(R+W{'>' if r + w > n else '<='}N)"
     )
-    run = run_checker(cfg)
+    try:
+        run = run_checker(cfg)
+    except Exception as exc:
+        # Guarantee: the checker never exits 0 without a verdict. If the run itself fails (e.g. the
+        # cluster could not start, or an unexpected error escaped), say so explicitly and exit
+        # non-zero, so a caller can never mistake an aborted run for a clean "no violations" result.
+        print(f"\nREPORT: ERROR -- checker aborted before producing a verdict: {exc!r}")
+        return 3
     print(
         f"\nOperations: {run.op_count}  nemesis actions: {run.nemesis_actions}  "
         f"statuses: {dict(sorted(run.status_counts.items()))}"
