@@ -207,11 +207,32 @@ ruff check && ruff format --check && mypy
 
 - **Single coordinator** — a SPOF and the sole HLC authority; no failover. Dashboard history and
   learned membership are in-memory and relearned from seeds/heartbeats on restart.
+- **HLC monotonicity holds only within one coordinator process** — `HybridClock` starts `_last_ms`
+  at 0 and does not persist it across restarts (`distrocache_common/hlc.py`). If the wall clock
+  moves backward across a coordinator restart (e.g. an NTP step), a new write can get a version
+  lower than versions already stored, and last-writer-wins would treat the newer write as older and
+  the nodes would reject it. Tracked as future work (persist the last stamp, or seed the clock from
+  a quorum read on startup).
 - **No background anti-entropy** — convergence after an outage leans on read repair and the next
   rebalance; there is no Merkle-tree sync yet.
 - **Tombstone GC vs a very long outage** — a node down past `TOMBSTONE_GC_SECONDS` could miss a
   delete; mitigated because a node gone past `DEAD_TIMEOUT` is pruned and refills on rejoin.
-- **No auth / TLS** on the HTTP API or between nodes.
+- **Slow-but-alive node not shed** — only a node the health loop marks *down* is pre-counted as a
+  failed vote. A replica that is up but slow still gets called; the parallel fan-out returns once
+  the quorum-th fastest replica answers, so a slow replica only costs latency when it is needed to
+  reach quorum (the request then waits up to `REQUEST_TIMEOUT` and retries). There is no active
+  latency-based ejection.
+- **No true-partition detection** — a network partition is not distinguished from the far replicas
+  being down; health probes to the unreachable side fail, the coordinator serves from whichever
+  side still has a quorum and returns `503` when none can form. Not tested with a real partition
+  (kills approximate one side).
+- **Large values** — a value is passed whole over gRPC under the default ~4 MB message limit; a
+  value near or above that is rejected by gRPC rather than chunked or streamed. Benchmarks exercise
+  values only up to 1 KB.
+- **No auth / TLS** on the HTTP API or between nodes. In particular the `/membership/*` endpoints
+  (`register` / `heartbeat` / `deregister` / `rebalance`) are unauthenticated, so any client that
+  can reach the coordinator can change ring membership — intended for local / trusted-network use
+  only.
 
 Out of scope (future work): hinted handoff, Merkle anti-entropy, an in-memory LRU engine, a smart
 client, multiple coordinators, gossip, auth/TLS, Kubernetes.

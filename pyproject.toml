@@ -1,6 +1,6 @@
 [project]
 name = "distrocache"
-version = "0.1.0"
+version = "1.0.0"
 description = "Distributed key-value cache: FastAPI coordinator, gRPC storage nodes, SQLite per node."
 readme = "README.md"
 requires-python = ">=3.11"
